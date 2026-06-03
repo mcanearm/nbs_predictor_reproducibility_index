@@ -23,6 +23,7 @@ name_remap = {
 # Low-level reader functions
 # ---------------------------------------------------------------------------
 
+
 def read_historical_files(path, date_format="%Y%m%d") -> xr.DataArray:
     """
     Read a GLCC CSV file (Date index, one column per lake).
@@ -136,23 +137,32 @@ def read_cfs_file(path) -> xr.DataArray:
 # Per-series loaders — each closes over its path and any format quirks
 # ---------------------------------------------------------------------------
 
+
 def _load_rnbs():
     return read_historical_files(DATA_DIR / "GLCC" / "rnbs_glcc.csv")
 
+
 def _load_precip():
-    glcc = read_historical_files(DATA_DIR / "GLCC" / "pcp_glerl_lakes_mic_hur_combined.csv")
+    glcc = read_historical_files(
+        DATA_DIR / "GLCC" / "pcp_glerl_lakes_mic_hur_combined.csv"
+    )
     glcc = glcc.expand_dims({"type": ["Thiessen"]})
     cfsr = read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_APCP_Basin_Avgs.csv")
     return xr.concat([glcc, cfsr], dim="type", join="outer")
 
+
 def _load_temp():
     return read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_TMP_Basin_Avgs.csv")
 
+
 def _load_evap():
-    glcc = read_historical_files(DATA_DIR / "GLCC" / "evap_glerl_lakes_mic_hur_combined.csv")
+    glcc = read_historical_files(
+        DATA_DIR / "GLCC" / "evap_glerl_lakes_mic_hur_combined.csv"
+    )
     glcc = glcc.expand_dims({"type": ["Thiessen"]})
     cfsr = read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_EVAP_Basin_Avgs.csv")
     return xr.concat([glcc, cfsr], dim="type", join="outer")
+
 
 def _load_runoff():
     # runoff uses YYYYMM date format, not YYYYMMDD
@@ -161,42 +171,48 @@ def _load_runoff():
         date_format="%Y%m",
     )
 
+
 def _load_water_level():
     return read_historical_files(DATA_DIR / "GLCC" / "wl_glcc.csv")
+
 
 def _load_lhfx():
     return read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_LHFX_Basin_Avgs.csv")
 
+
 def _forecast_precip():
     return read_cfs_file(DATA_DIR / "CFS" / "CFS_APCP_Basin_Avgs.csv")
 
+
 def _forecast_temp():
     return read_cfs_file(DATA_DIR / "CFS" / "CFS_TMP_Basin_Avgs.csv")
+
 
 def _forecast_evap():
     return read_cfs_file(DATA_DIR / "CFS" / "CFS_EVAP_Basin_Avgs.csv")
 
 
 _input_loaders = {
-    "rnbs":        _load_rnbs,
-    "precip":      _load_precip,
-    "temp":        _load_temp,
-    "evap":        _load_evap,
-    "runoff":      _load_runoff,
+    "rnbs": _load_rnbs,
+    "precip": _load_precip,
+    "temp": _load_temp,
+    "evap": _load_evap,
+    "runoff": _load_runoff,
     "water_level": _load_water_level,
-    "lhfx":        _load_lhfx,
+    "lhfx": _load_lhfx,
 }
 
 _forecast_loaders = {
     "precip": _forecast_precip,
-    "temp":   _forecast_temp,
-    "evap":   _forecast_evap,
+    "temp": _forecast_temp,
+    "evap": _forecast_evap,
 }
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def load_data(series: Union[str, List[str]], data_type: str = "inputs"):
     """

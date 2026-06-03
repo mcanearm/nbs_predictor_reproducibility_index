@@ -3,6 +3,7 @@ import xarray as xr
 
 from src.data_loading.data_loading import load_data, _input_loaders, _forecast_loaders
 
+
 @pytest.mark.parametrize("series", _input_loaders.keys())
 def test_single_series(series):
     df = load_data(series)

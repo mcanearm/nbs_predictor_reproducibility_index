@@ -19,7 +19,6 @@ __all__ = [
 
 
 class DefaultEnsemble(ModelBase):
-
     @property
     def name(self):
         return "DefaultEnsemble"
@@ -77,9 +76,7 @@ class BaggedXArrayRegressor(ModelBase):
         super().__init__()
         if sklearn_bagging_regressor is None:
             self.sklearn_bagging_regressor_ = BaggingRegressor(
-                estimator=LinearRegression(),
-                n_estimators=250,
-                n_jobs=-1
+                estimator=LinearRegression(), n_estimators=250, n_jobs=-1
             )
         else:
             self.sklearn_bagging_regressor_ = sklearn_bagging_regressor
@@ -95,7 +92,9 @@ class BaggedXArrayRegressor(ModelBase):
     def predict(
         self, X, y=None, forecast_steps=12, alpha=0.05, *args, **kwargs
     ) -> xr.DataArray:
-        predictions = np.stack([m.predict(X) for m in self.sklearn_bagging_regressor_.estimators_], axis=-1)
+        predictions = np.stack(
+            [m.predict(X) for m in self.sklearn_bagging_regressor_.estimators_], axis=-1
+        )
 
         output_array = np.stack(
             [
@@ -119,7 +118,6 @@ class BaggedXArrayRegressor(ModelBase):
 
 
 class RandomForest(ModelBase):
-
     def __init__(self, rf_model=None):
         super().__init__()
         self.rf_model_ = rf_model or RandomForestRegressor(n_estimators=100)
@@ -157,11 +155,12 @@ class RandomForest(ModelBase):
 
 
 class BoostedRegressor(ModelBase):
-
     def __init__(self, alpha=0.05, base_regressor=None):
         super().__init__()
         self.alpha = alpha
-        self.base_regressor_ = base_regressor or GradientBoostingRegressor(loss="quantile")
+        self.base_regressor_ = base_regressor or GradientBoostingRegressor(
+            loss="quantile"
+        )
         self.models_ = None
 
     @property

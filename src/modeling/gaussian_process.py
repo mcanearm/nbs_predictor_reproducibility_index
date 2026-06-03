@@ -37,7 +37,6 @@ def matern_kernel(X, Z, lengthscale=1.0, nu=1.0):
 
 
 class NumpyroLagGP(NumpyroModel):
-
     """
     Numpyro Gaussian Process model with lagged target variable and static covariates.
 
@@ -143,7 +142,9 @@ class SklearnGPModel(ModelBase):
             base_regressor:
         """
         super().__init__()
-        self.base_regressor_ = base_regressor or GaussianProcessRegressor(kernel=1.0 * kernels.Matern())
+        self.base_regressor_ = base_regressor or GaussianProcessRegressor(
+            kernel=1.0 * kernels.Matern()
+        )
 
     @property
     def name(self):
@@ -176,7 +177,6 @@ class SklearnGPModel(ModelBase):
 
 
 class LaggedSklearnGP(ModelBase):
-
     def __init__(self, base_regressor=None, lags=None):
         """
         Gaussian Process from sklearn. Assumes identical variance across lakes, though not means.
@@ -187,7 +187,9 @@ class LaggedSklearnGP(ModelBase):
 
         """
         super().__init__()
-        self.base_regressor_ = base_regressor or GaussianProcessRegressor(kernel=1.0 * kernels.Matern())
+        self.base_regressor_ = base_regressor or GaussianProcessRegressor(
+            kernel=1.0 * kernels.Matern()
+        )
         self.lags = lags or {"y": 3}  # we don't want a dict in the default arguments
 
     @property
@@ -280,7 +282,6 @@ class GPyTorchKernel(gpytorch.models.ExactGP):
 
 
 class MultitaskGP(ModelBase):
-
     def __init__(self, epochs=50, optimizer_params=None, kernel_args=None):
         super().__init__()
 

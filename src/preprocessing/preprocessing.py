@@ -127,7 +127,6 @@ class XArrayStandardScaler(BaseEstimator, TransformerMixin):
 
 
 class MinMaxScaler(object):
-
     def __init__(self):
         self.is_fitted = False
         self.mins = None
@@ -189,7 +188,6 @@ def scale_features(data):
 
 
 class CreateMonthDummies(object):
-
     def __init__(self, encoder=None):
         self.encoder = encoder or OneHotEncoder(
             categories="auto", sparse_output=False, drop=[1]
@@ -218,7 +216,6 @@ class CreateMonthDummies(object):
 
 
 class SeasonalFeatures(object):
-
     def __init__(self, period=12):
         self.period = period
 
@@ -253,7 +250,6 @@ def sin_feature(x, period):
 
 
 class XArrayAdapter(object):
-
     def __init__(self, sklearn_preprocessor, feature_prefix="f"):
         super().__init__()
         self.sklearn_preprocessor = sklearn_preprocessor
@@ -286,7 +282,6 @@ class XArrayAdapter(object):
 
 
 class XArrayFeatureUnion(object):
-
     def __init__(self, transformers):
         self.transformers = transformers
 

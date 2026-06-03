@@ -25,7 +25,6 @@ __all__ = [
 
 
 class ModelBase(BaseEstimator, ABC):
-
     def __init__(self):
         super().__init__()
 
@@ -73,7 +72,6 @@ class ModelBase(BaseEstimator, ABC):
 
 
 class NumpyroModel(ModelBase):
-
     def __init__(
         self,
         lags=None,

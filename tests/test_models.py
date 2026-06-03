@@ -35,7 +35,7 @@ modelList = {
         num_warmup=0,
         num_samples=3,
         num_chains=1,
-        lags={"y": 1, "precip": 1, "evap": 1},  # note 
+        lags={"y": 1, "precip": 1, "evap": 1},  # note
     ),
     "GP": Pipeline(
         steps=[

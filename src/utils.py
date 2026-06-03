@@ -258,7 +258,6 @@ def lag_xarray(
             lagged_vars.append(lag_array(x.sel(variable=var), lags=lag_range))
         return lagged_vars
     else:
-
         # given the range of lags, get the lagged values and then return an XArray with those dimensions
         lag_vect = [x.shift(Date=j).rename(f"lag_{j}") for j in lags]
 

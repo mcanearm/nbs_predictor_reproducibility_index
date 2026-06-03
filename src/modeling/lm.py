@@ -39,7 +39,9 @@ class LinearModel(ModelBase):
         predictions = self.model_.predict(X)
         prediction_x_diff = ((X - self.mean_x_) ** 2).sum(axis=1)
 
-        broadcasted_vector = np.broadcast_to(self.mse_, (X.shape[0], self.mse_.shape[0]))
+        broadcasted_vector = np.broadcast_to(
+            self.mse_, (X.shape[0], self.mse_.shape[0])
+        )
         x_diffs = np.repeat(
             (1 + 1 / self.n_ + prediction_x_diff / self.total_x_).values.reshape(-1, 1),
             4,
