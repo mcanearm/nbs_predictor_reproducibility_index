@@ -62,6 +62,12 @@ class XArrayStandardScaler(object):
         self.means = X.mean("Date")
         self.std = X.std("Date")
         self.is_fitted = True
+        # Trailing-underscore aliases satisfy sklearn's check_is_fitted convention,
+        # which is required for Pipeline to recognise this estimator as fitted
+        # (sklearn 1.7+ warns, 1.8+ errors without these).
+        self.mean_ = self.means
+        self.scale_ = self.std
+        return self
 
     def transform(self, X: xr.DataArray, y=None) -> xr.DataArray:
         """
@@ -135,8 +141,10 @@ class MinMaxScaler(object):
 
         self.mins = X.min("Date")
         self.maxes = X.max("Date")
-
         self.is_fitted = True
+        self.min_ = self.mins
+        self.max_ = self.maxes
+        return self
 
     def transform(self, X: xr.DataArray, y=None):
         return (X - self.mins) / (self.maxes - self.mins)
