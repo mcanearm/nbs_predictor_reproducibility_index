@@ -1,42 +1,13 @@
 import datetime as dt
 import re
-from functools import partial
 from typing import List, Union
-from collections.abc import Iterable
 
 import pandas as pd
 import xarray as xr
 
 from src.constants import DATA_DIR
 
-# GLCC
-runoff_hist_path = DATA_DIR / "GLCC" / "runoff_glerl_mic_hur_combined.csv"
-rnbs_hist_path = DATA_DIR / "GLCC" / "rnbs_glcc.csv"
-precip_hist_path = DATA_DIR / "GLCC" / "pcp_glerl_lakes_mic_hur_combined.csv"
-evap_hist_path = DATA_DIR / "GLCC" / "evap_glerl_lakes_mic_hur_combined.csv"
-water_level_hist_path = DATA_DIR / "GLCC" / "wl_glcc.csv"
-
-
-# CFSR
-lhfx_cfsr_path = DATA_DIR / "CFSR" / "CFSR_LHFX_Basin_Avgs.csv"
-temp_cfsr_path = DATA_DIR / "CFSR" / "CFSR_TMP_Basin_Avgs.csv"
-evap_cfsr_path = DATA_DIR / "CFSR" / "CFSR_EVAP_Basin_Avgs.csv"
-precip_cfsr_path = DATA_DIR / "CFSR" / "CFSR_APCP_Basin_Avgs.csv"
-
-
-# CFS
-cfs_dir = DATA_DIR / "CFS"
-
-temp_cfs_path = list(cfs_dir.glob("./CFS_TMP_Basin_Avgs.csv"))
-precip_cfs_path = list(cfs_dir.glob("./CFS_APCP_Basin_Avgs.csv"))
-evap_cfs_path = list(cfs_dir.glob("./CFS_EVAP_Basin_Avgs.csv"))
-
-
-# L2SWBM
-
-
-# Only interact with the data through the load_data
-__all__ = ["load_data", "input_map", "forecast_map"]
+__all__ = ["load_data"]
 
 lake_order = ["sup", "mic_hur", "eri", "ont"]
 name_remap = {
@@ -45,28 +16,21 @@ name_remap = {
     "Superior": "sup",
     "Huron": "hur",
     "Michigan": "mic",
-}  # mic_hur is done while creating the column
+}  # mic_hur is combined inside read_cfsr_files / read_cfs_file
 
 
-def read_historical_files(path, reader_args=None) -> xr.DataArray:
+# ---------------------------------------------------------------------------
+# Low-level reader functions
+# ---------------------------------------------------------------------------
+
+def read_historical_files(path, date_format="%Y%m%d") -> xr.DataArray:
     """
-    Read in GLCC files. These have a simple format. For a given series, there are 5 columns: date,
-    and the 4 great lakes. Once the file is read in, ensure that the columns are in the correct order.
-    It is also assumed that the columns will have the following names: "sup", "mic_hur", "eri", "ont".
-
-    Args:
-        path: The path to the file
-        reader_args: Any arguments that are passed to pd.read_csv. If none are provided,
-        default options are assumed.
-
-    Returns:
-        An Xarray DataArray with the GLCC data, with "Date" as the leading dimension and "lake" as the
-        second.
-
+    Read a GLCC CSV file (Date index, one column per lake).
+    Returns a DataArray with dims (Date, lake).
     """
-
-    reader_args = reader_args or {"index_col": "Date", "date_format": "%Y%m%d"}
-    df = pd.read_csv(path, **reader_args)[lake_order]
+    df = pd.read_csv(path, index_col="Date")[lake_order]
+    df.index = pd.to_datetime(df.index.astype(str), format=date_format)
+    df.index.name = "Date"
     return xr.DataArray(
         df,
         dims=["Date", "lake"],
@@ -74,28 +38,16 @@ def read_historical_files(path, reader_args=None) -> xr.DataArray:
     )
 
 
-def read_cfsr_files(path, reader_args=None, sum_mic_hur: bool = True) -> xr.DataArray:
+def read_cfsr_files(path) -> xr.DataArray:
     """
-    Read CSVs which have the format of {Type}{Lake} for each column. These consist of multiple columns for each lake.
-    For example, each column in temperature is BasinSuperior, BasinErie, WaterMichigan, etc.
-    Args:
-        path: Path of the file to read in
-
-    Returns:
-        An xarray.DataArray with dimensions 1 and 2 of Date and lake (respectively) followed by any other
-        dimensions, though generally this is "type", i.e. "Land", "Water", and "Basin".
+    Read a CFSR reanalysis CSV file (year/month columns, {Type}{Lake} columns).
+    Michigan and Huron are averaged into mic_hur.
+    Returns a DataArray with dims (Date, lake, type).
     """
-    reader_args = reader_args or {}
-    df = pd.read_csv(path, **reader_args)
+    df = pd.read_csv(path)
 
-    # create a date index from two columns - year and month
     date_index = pd.Index(
-        list(
-            map(
-                lambda date_args: dt.datetime(*date_args, 1),
-                zip(df["year"], df["month"]),
-            )
-        ),
+        [dt.datetime(year, month, 1) for year, month in zip(df["year"], df["month"])],
         name="Date",
     )
 
@@ -107,56 +59,34 @@ def read_cfsr_files(path, reader_args=None, sum_mic_hur: bool = True) -> xr.Data
     df.columns = new_columns
     df = df.rename(columns=name_remap, level=1)
 
-    # with the new date index, convert to a "long" format
     output_array = (
         df.melt(value_name="value", ignore_index=False)
         .set_index(["lake", "type"], append=True)
         .to_xarray()
         .to_array()
         .squeeze()
-        .drop("variable")
+        .drop_vars("variable")
     )
 
-    if sum_mic_hur == "sum":
-        mic_hur = (
-            output_array.sel(lake=["mic", "hur"])
-            .sum(dim="lake")
-            .expand_dims(dim={"lake": ["mic_hur"]})
-        )
-    else:
-        mic_hur = (
-            output_array.sel(lake=["mic", "hur"])
-            .mean(dim="lake")
-            .expand_dims(dim={"lake": ["mic_hur"]})
-        )
-
-    # Current columns are BasinErie, for example: find these, split, and create this varaible as two variables
-    # with the melted data in the DF (Date -> lake -> ...) convert to an Xarray
-    # loop over the groups ("Basin", "Land", "Lake") and format to match the format of Type I files.
+    mic_hur = (
+        output_array.sel(lake=["mic", "hur"])
+        .mean(dim="lake")
+        .expand_dims(dim={"lake": ["mic_hur"]})
+    )
     cur_forecasts = output_array.sel(lake=["eri", "sup", "ont"])
-    forecast_array = (
+    return (
         xr.concat([mic_hur, cur_forecasts], dim="lake")
         .sel(lake=lake_order)
         .transpose("Date", "lake", "type")
     )
-    return forecast_array
 
 
-def read_cfs_file(path, sum_mic_hur=True) -> xr.DataArray:
+def read_cfs_file(path) -> xr.DataArray:
     """
-    Reads a CFS (Climate Forecast System) CSV file and converts it into an Xarray DataArray.
-
-    The CSV file is expected to contain columns for year, month, cfsrun, and various lake measurements.
-    The function processes the data to create a multi-dimensional DataArray with dimensions for Date,
-    months ahead, lake, and type.
-
-    Args:
-        path: The path to the CSV file to be read.
-
-    Returns:
-        An Xarray DataArray with dimensions Date, months_ahead, lake, and type.
+    Read a CFS forecast CSV file (year, month, cfsrun, {Type}{Lake} columns).
+    Michigan and Huron are averaged into mic_hur.
+    Returns a DataArray with dims (Date, months_ahead, lake, type).
     """
-
     input_csv = pd.read_csv(path)
     forecast_date = pd.to_datetime(
         input_csv.pop("year").astype(str) + input_csv.pop("month").astype(str),
@@ -175,8 +105,6 @@ def read_cfs_file(path, sum_mic_hur=True) -> xr.DataArray:
     input_csv["months_ahead"] = (
         input_csv.sort_values(["cfsrun", "forecast_date"]).groupby("cfsrun").cumcount()
     )
-
-    # convert from an explicit forecast date to a simple integer for how many months ahead we are predicting
     input_csv = input_csv.reset_index(level=1, drop=True).set_index(
         "months_ahead", append=True
     )
@@ -188,185 +116,117 @@ def read_cfs_file(path, sum_mic_hur=True) -> xr.DataArray:
         .to_xarray()
         .to_array()
         .squeeze()
-        .drop("variable")
+        .drop_vars("variable")
     )
 
-    # need to collapse michigan/huron measurements together into a single lake
-    if sum_mic_hur:
-        mich_hur = (
-            output_array.sel(lake=["mic", "hur"])
-            .sum(dim="lake")
-            .expand_dims(dim={"lake": ["mic_hur"]})
-        )
-    else:
-        mich_hur = (
-            output_array.sel(lake=["mic", "hur"])
-            .mean(dim="lake")
-            .expand_dims(dim={"lake": ["mic_hur"]})
-        )
-
+    mic_hur = (
+        output_array.sel(lake=["mic", "hur"])
+        .mean(dim="lake")
+        .expand_dims(dim={"lake": ["mic_hur"]})
+    )
     cur_forecasts = output_array.sel(lake=["eri", "sup", "ont"])
-    forecast_array = (
-        xr.concat([mich_hur, cur_forecasts], dim="lake")
+    return (
+        xr.concat([mic_hur, cur_forecasts], dim="lake")
         .sel(lake=lake_order)
         .transpose("Date", "months_ahead", "lake", "type")
     )
-    return forecast_array
 
 
-class FileReader(object):
+# ---------------------------------------------------------------------------
+# Per-series loaders — each closes over its path and any format quirks
+# ---------------------------------------------------------------------------
 
-    def __init__(
-        self,
-        path,
-        series_name=None,
-        reader: callable = read_historical_files,
-        **metadata
-    ):
-        """
-        Helper class to connect a particular CSV reader and an Xarray formatter. There are default
-        options in use for files with 4 series, one for each lake. This allows for a custom
-        formatter to be used as well. This is a callable, so once instantiated, it can be used
-        like a normal function.
+def _load_rnbs():
+    return read_historical_files(DATA_DIR / "GLCC" / "rnbs_glcc.csv")
 
-        Args:
-            reader: A function for reading in data.
-            parser: A function parsing the data into XArray format
-            **metadata: Any keyword arguments to append as attributes to the output XArray
-        """
-        super().__init__()
-        self._reader = reader
-        self.metadata = metadata or {}
-        self.path = path
-        self.series_name = series_name
+def _load_precip():
+    glcc = read_historical_files(DATA_DIR / "GLCC" / "pcp_glerl_lakes_mic_hur_combined.csv")
+    glcc = glcc.expand_dims({"type": ["Thiessen"]})
+    cfsr = read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_APCP_Basin_Avgs.csv")
+    return xr.concat([glcc, cfsr], dim="type", join="outer")
 
-    def __call__(self) -> xr.DataArray:
+def _load_temp():
+    return read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_TMP_Basin_Avgs.csv")
 
-        # If a list of files is passed in, assume that we want to concatenate across dates
-        # otherwise, just read in the file and return the Xarray
-        # In both cases, assign the metadata to the Xarray
-        if isinstance(self.path, Iterable):
-            arrs = [self._reader(path).rename(self.series_name) for path in self.path]
-            return (
-                xr.concat(arrs, dim="Date")
-                .assign_attrs(**self.metadata)
-                .sortby("Date", ascending=True)
-            )
-        else:
-            arr: xr.DataArray = self._reader(self.path).rename(self.series_name)
-            return arr.assign_attrs(**self.metadata)
+def _load_evap():
+    glcc = read_historical_files(DATA_DIR / "GLCC" / "evap_glerl_lakes_mic_hur_combined.csv")
+    glcc = glcc.expand_dims({"type": ["Thiessen"]})
+    cfsr = read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_EVAP_Basin_Avgs.csv")
+    return xr.concat([glcc, cfsr], dim="type", join="outer")
 
+def _load_runoff():
+    # runoff uses YYYYMM date format, not YYYYMMDD
+    return read_historical_files(
+        DATA_DIR / "GLCC" / "runoff_glerl_mic_hur_combined.csv",
+        date_format="%Y%m",
+    )
 
-def expand_dims(fn, var_name="Thiessen"):
-    """
-    Decorator to take the output of a FileReader and add a new dimensions (type) to a DataArray. This allows merging
-    with FileReaders that return a type ("Basin", "Water", "Land") with FileReaders that do not, i.e. only return
-    Date and Lake.
+def _load_water_level():
+    return read_historical_files(DATA_DIR / "GLCC" / "wl_glcc.csv")
 
-    Args:
-        fn: A filereader function
-        var_name: The variable name of the newly "type" dimension.
+def _load_lhfx():
+    return read_cfsr_files(DATA_DIR / "CFSR" / "CFSR_LHFX_Basin_Avgs.csv")
 
-    Returns:
-        The DataArray from "fn" with a new "type" dimension appended on the right.
+def _forecast_precip():
+    return read_cfs_file(DATA_DIR / "CFS" / "CFS_APCP_Basin_Avgs.csv")
 
-    """
+def _forecast_temp():
+    return read_cfs_file(DATA_DIR / "CFS" / "CFS_TMP_Basin_Avgs.csv")
 
-    def inner(*args, **kwargs):
-        return fn(*args, **kwargs).expand_dims(dim={"type": [var_name]}, axis=-1)
-
-    return inner
+def _forecast_evap():
+    return read_cfs_file(DATA_DIR / "CFS" / "CFS_EVAP_Basin_Avgs.csv")
 
 
-# Map a series name to a reader function and filepath. The filepaths are dynamic but based on
-# the source directory.
-forecast_map = {
-    "precip": FileReader(
-        precip_cfs_path, reader=read_cfs_file, source="CFS", type="forecast"
-    ),
-    "evap": FileReader(
-        evap_cfs_path, reader=read_cfs_file, source="CFS", type="forecast"
-    ),
-    "temp": FileReader(
-        temp_cfs_path,
-        reader=partial(read_cfs_file, sum_mic_hur=False),
-        source="CFS",
-        type="forecast",
-    ),
+_input_loaders = {
+    "rnbs":        _load_rnbs,
+    "precip":      _load_precip,
+    "temp":        _load_temp,
+    "evap":        _load_evap,
+    "runoff":      _load_runoff,
+    "water_level": _load_water_level,
+    "lhfx":        _load_lhfx,
 }
 
-input_map = {
-    "rnbs": FileReader(rnbs_hist_path, source="GLCC", series_name="rnbs_hist"),
-    "precip": [
-        expand_dims(
-            FileReader(precip_hist_path, source="GLCC", series_name="precip_hist")
-        ),
-        FileReader(
-            precip_cfsr_path,
-            reader=read_cfsr_files,
-            source="CFSR",
-            series_name="precip_reanalysis",
-        ),
-    ],
-    "evap": [
-        expand_dims(FileReader(evap_hist_path, source="GLCC", series_name="evap_hist")),
-        FileReader(
-            evap_cfsr_path,
-            reader=read_cfsr_files,
-            source="CFSR",
-            series_name="evap_reanalysis",
-        ),
-    ],
-    "runoff": FileReader(
-        runoff_hist_path,
-        reader=partial(
-            read_historical_files,
-            reader_args={"date_format": "%Y%m", "index_col": "Date"},
-        ),
-    ),
-    "water_level": FileReader(
-        water_level_hist_path, source="GLCC", series_name="water_level"
-    ),
-    "temp": FileReader(
-        temp_cfsr_path,
-        reader=partial(read_cfsr_files, sum_mic_hur=False),
-        source="CFSR",
-        units="K",
-        series_name="temp",
-    ),
-    "lhfx": FileReader(
-        lhfx_cfsr_path,
-        reader=read_cfsr_files,
-        source="CFSR",
-        units="K",
-        series_name="lhfx",
-    ),
+_forecast_loaders = {
+    "precip": _forecast_precip,
+    "temp":   _forecast_temp,
+    "evap":   _forecast_evap,
 }
 
 
-def load_data(series: Union[str, List[str]], data_type="inputs"):
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def load_data(series: Union[str, List[str]], data_type: str = "inputs"):
     """
-    Load a data series based on name. Requires that raw files be available in the DATA_DIR from constants.py
+    Load one or more data series by name.
+
     Args:
-        series: the name of the series. Valid names include "rnbs", "precip", "evap", "runoff", "water_level"
-        data_type: Type of values to get. Options include "inputs" and "forecasts".
+        series: Series name or list of names.
+                Inputs:    "rnbs", "precip", "temp", "evap", "runoff",
+                           "water_level", "lhfx"
+                Forecasts: "precip", "temp", "evap"
+        data_type: "inputs" (default) or "forecasts"
+
     Returns:
-        An xarray DataArray containing each series OR a pandas dataframe if only one series is requested.
-
+        xr.DataArray for a single series, xr.Dataset for a list.
     """
+    assert data_type in ("inputs", "forecasts"), (
+        f"data_type must be 'inputs' or 'forecasts', got {data_type!r}"
+    )
+    loaders = _input_loaders if data_type == "inputs" else _forecast_loaders
 
-    assert data_type in ["inputs", "forecasts"]
-    series_mapping = input_map if data_type == "inputs" else forecast_map
-
-    # If a list of series is passed in, recursively call the loading function
-    if isinstance(series, List):
+    if isinstance(series, list):
         return xr.merge(
-            [load_data(s, data_type=data_type).rename(s) for s in series]
+            [load_data(s, data_type=data_type).rename(s) for s in series],
+            join="outer",
         ).transpose("Date", "lake", ...)
-    else:
-        read_fn = series_mapping[series]
-        if isinstance(read_fn, list):
-            inputs = [read_fn() for read_fn in series_mapping[series]]
-            return xr.concat(inputs, dim="type").rename(series)
-        else:
-            return read_fn().rename(series)
+
+    if series not in loaders:
+        raise ValueError(
+            f"Unknown series {series!r} for data_type={data_type!r}. "
+            f"Options: {list(loaders)}"
+        )
+
+    return loaders[series]()

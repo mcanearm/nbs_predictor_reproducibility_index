@@ -43,9 +43,9 @@ class VAR(NumpyroModel):
         self.num_samples = num_samples
         self.num_warmup = num_warmup
         self.lakes = list(lakes)
-        self.predictive_fn = None  # updated during model fitting
-        self.trace = None
-        self.mcmc = None
+        self.predictive_fn_ = None  # updated during model fitting
+        self.trace_ = None
+        self.mcmc_ = None
 
     @property
     def coords(self):

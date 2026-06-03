@@ -21,7 +21,6 @@ from src.modeling.lm import LinearModel
 from src.modeling.metrics import summarize
 from src.modeling.modeling import ModelBase
 from src.modeling.multivariate import LakeMVT
-from src.modeling.nn import BayesNN
 from src.modeling.var_models import NARX, VARX, VAR
 from src.postprocessing.postprocessing import output_forecast_results
 from src.utils import flatten_array
@@ -42,19 +41,13 @@ modelList = {
         steps=[
             ("scale", XArrayStandardScaler()),
             ("flatten", FunctionTransformer(flatten_array)),
-            ("gp", SklearnGPModel(kernel=1.0 * k.Matern())),
+            ("gp", SklearnGPModel()),
         ]
     ),
     "SklearnRegressor": Pipeline(
         [
             ("flatten", FunctionTransformer(flatten_array)),
             ("nnet", BaggedXArrayRegressor()),
-        ]
-    ),
-    "BayesNN": Pipeline(
-        [
-            ("flatten", FunctionTransformer(flatten_array)),
-            ("nnet", BayesNN(num_warmup=0, num_samples=3, num_chains=1)),
         ]
     ),
     "LaggedSklearnGP": Pipeline(

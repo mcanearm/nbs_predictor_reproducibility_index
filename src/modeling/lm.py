@@ -9,45 +9,45 @@ from src.postprocessing.postprocessing import output_forecast_results
 
 
 class LinearModel(ModelBase):
-    def __init__(self):
+    def __init__(self, model=None):
         super(LinearModel, self).__init__()
-        self.model = LinearRegression()
-        self.mse = None
-        self.mean_x = None
-        self.n = None
-        self.train_x = None
-        self.total_x = None
+        self.model_ = model or LinearRegression()
+        self.mse_ = None
+        self.mean_x_ = None
+        self.n_ = None
+        self.train_x_ = None
+        self.total_x_ = None
 
     @property
     def name(self):
         return "LinearModel"
 
     def fit(self, X, y):
-        self.model.fit(X, y)
-        self.mean_x = X.mean(axis=0)
-        self.n = X.shape[0]
+        self.model_.fit(X, y)
+        self.mean_x_ = X.mean(axis=0)
+        self.n_ = X.shape[0]
         self.tran_x = X
 
-        self.total_x = ((X - self.mean_x) ** 2).sum(axis=1).sum()
+        self.total_x_ = ((X - self.mean_x_) ** 2).sum(axis=1).sum()
 
-        train_predictions = self.model.predict(X)
-        self.mse = mean_squared_error(y, train_predictions, multioutput="raw_values")
+        train_predictions = self.model_.predict(X)
+        self.mse_ = mean_squared_error(y, train_predictions, multioutput="raw_values")
 
     def predict(
         self, X, y=None, forecast_steps=12, alpha=0.05, *args, **kwargs
     ) -> DataArray:
-        predictions = self.model.predict(X)
-        prediction_x_diff = ((X - self.mean_x) ** 2).sum(axis=1)
+        predictions = self.model_.predict(X)
+        prediction_x_diff = ((X - self.mean_x_) ** 2).sum(axis=1)
 
-        broadcasted_vector = np.broadcast_to(self.mse, (X.shape[0], self.mse.shape[0]))
+        broadcasted_vector = np.broadcast_to(self.mse_, (X.shape[0], self.mse_.shape[0]))
         x_diffs = np.repeat(
-            (1 + 1 / self.n + prediction_x_diff / self.total_x).values.reshape(-1, 1),
+            (1 + 1 / self.n_ + prediction_x_diff / self.total_x_).values.reshape(-1, 1),
             4,
             axis=1,
         )
         stddev_est = np.sqrt(broadcasted_vector * x_diffs)
 
-        t_dist = np.abs(stats.t.ppf(alpha / 2, self.n - 2))
+        t_dist = np.abs(stats.t.ppf(alpha / 2, self.n_ - 2))
 
         lower, upper = (
             predictions - t_dist * stddev_est,

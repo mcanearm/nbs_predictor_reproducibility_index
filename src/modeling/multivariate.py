@@ -21,8 +21,8 @@ class LakeMVT(NumpyroModel):
     @property
     def coords(self):
         return {
-            "lakes": self.lakes,
-            "lakes_cov": self.lakes,
+            "lakes": list(self.lakes_),
+            "lakes_cov": list(self.lakes_),
             "month": list(calendar.month_abbr)[1:],
         }
 

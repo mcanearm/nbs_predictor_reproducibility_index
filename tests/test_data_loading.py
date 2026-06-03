@@ -1,22 +1,20 @@
 import pytest
 import xarray as xr
 
-from src.data_loading.data_loading import load_data, input_map, forecast_map
+from src.data_loading.data_loading import load_data, _input_loaders, _forecast_loaders
 
-
-@pytest.mark.parametrize("series", input_map.keys())
+@pytest.mark.parametrize("series", _input_loaders.keys())
 def test_single_series(series):
     df = load_data(series)
     assert isinstance(df, xr.DataArray)
 
 
 @pytest.mark.parametrize(
-    "input_mapping", [input_map, forecast_map], ids=["inputs", "forecasts"]
+    "loaders, data_type", [(_input_loaders, "inputs"), (_forecast_loaders, "forecasts")]
 )
-def test_multi_series(input_mapping, request):
-    id_name = request.node.callspec.id.split("-")
-    series_list = list(input_mapping.keys())
-    covars = load_data(series_list, data_type=id_name[0])
+def test_multi_series(loaders, data_type):
+    series_list = list(loaders.keys())
+    covars = load_data(series_list, data_type=data_type)
 
     assert list(covars.data_vars) == series_list
     assert isinstance(covars, xr.Dataset)

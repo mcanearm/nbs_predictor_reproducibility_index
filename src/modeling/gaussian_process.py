@@ -129,7 +129,7 @@ class NumpyroLagGP(NumpyroModel):
         pass
 
 
-class SklearnGPModel(ModelBase, ABC):
+class SklearnGPModel(ModelBase):
     def save(self, path):
         pass
 
@@ -137,20 +137,20 @@ class SklearnGPModel(ModelBase, ABC):
     def load(cls, path):
         pass
 
-    def __init__(self, kernel=1.0 * kernels.Matern(), *args, **kwargs):
+    def __init__(self, base_regressor=None):
         """
         Args:
-            kernel:
+            base_regressor:
         """
         super().__init__()
-        self.model = GaussianProcessRegressor(kernel, *args, **kwargs)
+        self.base_regressor_ = base_regressor or GaussianProcessRegressor(kernel=1.0 * kernels.Matern())
 
     @property
     def name(self):
         return "SklearnGP"
 
     def fit(self, X, y, *args, **kwargs):
-        self.model.fit(X, y, *args, **kwargs)
+        self.base_regressor_.fit(X, y, *args, **kwargs)
 
     def predict(
         self,
@@ -161,7 +161,7 @@ class SklearnGPModel(ModelBase, ABC):
         *args,
         **kwargs,
     ) -> xr.DataArray:
-        mean, sd = self.model.predict(X, return_std=True)
+        mean, sd = self.base_regressor_.predict(X, return_std=True)
         mean, sd = mean[-forecast_steps:], sd[-forecast_steps:]
 
         z_scores = norm.ppf([alpha / 2, 1 - alpha / 2])
@@ -177,16 +177,18 @@ class SklearnGPModel(ModelBase, ABC):
 
 class LaggedSklearnGP(ModelBase):
 
-    def __init__(self, kernel=1.0 * kernels.Matern(), lags=None, *args, **kwargs):
+    def __init__(self, base_regressor=None, lags=None):
         """
         Gaussian Process from sklearn. Assumes identical variance across lakes, though not means.
 
         Args:
-            kernel: Gaussian Process kernel
+            base_regressor:
+            lags:
+
         """
         super().__init__()
-        self.model = GaussianProcessRegressor(kernel, *args, **kwargs)
-        self.lags = lags or {"y": 3}
+        self.base_regressor_ = base_regressor or GaussianProcessRegressor(kernel=1.0 * kernels.Matern())
+        self.lags = lags or {"y": 3}  # we don't want a dict in the default arguments
 
     @property
     def name(self):
@@ -200,7 +202,7 @@ class LaggedSklearnGP(ModelBase):
         train_df = xr.concat([X_align, flatten_array(lag_y_align)], dim="variable")
         train_y, _ = xr.align(y, train_df)
 
-        self.model.fit(train_df, train_y, *args, **kwargs)
+        self.base_regressor_.fit(train_df, train_y, *args, **kwargs)
 
     def _lag_y_var(self, y):
         return lag_array(y, range(1, self.lags["y"] + 1)).dropna("Date")
@@ -227,7 +229,7 @@ class LaggedSklearnGP(ModelBase):
         for x_cov in align_X.transpose("Date", ...):
             flattened_y = flatten_array(initial_y)[0]
             pred_input = np.concatenate([x_cov.values, flattened_y]).reshape(1, -1)
-            new_mean, new_sd = self.model.predict(pred_input, return_std=True)
+            new_mean, new_sd = self.base_regressor_.predict(pred_input, return_std=True)
 
             pred = np.stack([new_mean, new_sd], axis=2)
             predictions.append(pred)
@@ -279,16 +281,16 @@ class GPyTorchKernel(gpytorch.models.ExactGP):
 
 class MultitaskGP(ModelBase):
 
-    def __init__(self, epochs=50, optimizer_params=None, **kernel_args):
+    def __init__(self, epochs=50, optimizer_params=None, kernel_args=None):
         super().__init__()
 
-        self.kernel = None
-        self.likelihood = None
-        self.mll = None
-        self.optim = None
+        self.kernel_ = None
+        self.likelihood_ = None
+        self.mll_ = None
+        self.optim_ = None
         self.epochs = epochs
         self.optimizer_params = optimizer_params or {"lr": 0.1}
-        self.kernel_args = kernel_args
+        self.kernel_args = kernel_args or {}
 
     @property
     def name(self):
@@ -299,46 +301,46 @@ class MultitaskGP(ModelBase):
         X = torch.tensor(X.values, dtype=torch.float32)
         y = torch.tensor(y.values, dtype=torch.float32)
 
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
+        self.likelihood_ = gpytorch.likelihoods.MultitaskGaussianLikelihood(
             num_tasks=y.shape[1]
         )
-        self.kernel = GPyTorchKernel(
-            X, y, self.likelihood, num_tasks=y.shape[1], **self.kernel_args
+        self.kernel_ = GPyTorchKernel(
+            X, y, self.likelihood_, num_tasks=y.shape[1], **self.kernel_args
         )
 
         # Find optimal model hyperparameters
-        self.kernel.train()
-        self.likelihood.train()
+        self.kernel_.train()
+        self.likelihood_.train()
 
         # Use the adam optimizer
-        self.optim = torch.optim.Adam(
-            self.kernel.parameters(), **self.optimizer_params
+        self.optim_ = torch.optim.Adam(
+            self.kernel_.parameters(), **self.optimizer_params
         )  # Includes GaussianLikelihood parameters
 
         # "Loss" for GPs - the marginal log likelihood
-        self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(
-            self.likelihood, self.kernel
+        self.mll_ = gpytorch.mlls.ExactMarginalLogLikelihood(
+            self.likelihood_, self.kernel_
         )
 
         for i in range(self.epochs):
-            self.optim.zero_grad()
-            output = self.kernel(X)
-            loss = -self.mll(output, y)
+            self.optim_.zero_grad()
+            output = self.kernel_(X)
+            loss = -self.mll_(output, y)
             loss.backward()
             if i % 50 == 0:
                 logger.info(
                     "Iter %d/%d - Loss: %.3f" % (i + 1, self.epochs, loss.item())
                 )
-            self.optim.step()
+            self.optim_.step()
 
     def predict(self, X, y=None, forecast_steps=12, *args, **kwargs) -> xr.DataArray:
-        self.kernel.eval()
-        self.likelihood.eval()
+        self.kernel_.eval()
+        self.likelihood_.eval()
 
         X_tensor = torch.tensor(X.values, dtype=torch.float32)
 
         with torch.no_grad():
-            preds = self.likelihood(self.kernel(X_tensor))
+            preds = self.likelihood_(self.kernel_(X_tensor))
 
         mean, (low, high), std = (
             preds.mean,

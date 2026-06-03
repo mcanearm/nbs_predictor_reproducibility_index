@@ -5,9 +5,10 @@ import pandas as pd
 import xarray as xr
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.base import BaseEstimator, TransformerMixin
 
 
-class XArrayStandardScaler(object):
+class XArrayStandardScaler(BaseEstimator, TransformerMixin):
     """
     A class used to standardize xarray DataArrays by removing the mean and
     scaling to unit variance along the 'Date' dimension.
@@ -35,8 +36,8 @@ class XArrayStandardScaler(object):
         None
         """
         self.is_fitted = False
-        self.means = None
-        self.std = None
+        self.means_ = None
+        self.std_ = None
         self.dims = None
         self.coords = None
 
@@ -59,14 +60,12 @@ class XArrayStandardScaler(object):
         """
         assert X.dims[0] == "Date"
 
-        self.means = X.mean("Date")
-        self.std = X.std("Date")
+        self.means_ = X.mean("Date")
+        self.std_ = X.std("Date")
         self.is_fitted = True
         # Trailing-underscore aliases satisfy sklearn's check_is_fitted convention,
         # which is required for Pipeline to recognise this estimator as fitted
         # (sklearn 1.7+ warns, 1.8+ errors without these).
-        self.mean_ = self.means
-        self.scale_ = self.std
         return self
 
     def transform(self, X: xr.DataArray, y=None) -> xr.DataArray:
@@ -86,7 +85,7 @@ class XArrayStandardScaler(object):
         X_transformed : xr.DataArray
             Standardized DataArray.
         """
-        return (X - self.means) / self.std
+        return (X - self.means_) / self.std_
 
     def fit_transform(self, X: xr.DataArray, y=None) -> xr.DataArray:
         """
@@ -124,7 +123,7 @@ class XArrayStandardScaler(object):
         X_original : xr.DataArray
             DataArray restored to the original distribution.
         """
-        return X * self.std + self.means
+        return X * self.std_ + self.means_
 
 
 class MinMaxScaler(object):

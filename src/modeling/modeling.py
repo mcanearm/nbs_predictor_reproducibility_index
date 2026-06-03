@@ -7,6 +7,7 @@ from jax import numpy as jnp
 from jax.random import PRNGKey
 from numpyro.diagnostics import hpdi
 from numpyro.infer import MCMC, NUTS, Predictive
+from sklearn.base import BaseEstimator
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 
@@ -23,10 +24,16 @@ __all__ = [
 ]
 
 
-class ModelBase(ABC):
+class ModelBase(BaseEstimator, ABC):
 
     def __init__(self):
         super().__init__()
+
+    def __sklearn_is_fitted__(self) -> bool:
+        """Report fitted status based on the sklearn convention of trailing-underscore
+        attributes. Subclasses should name all fitted state with a trailing underscore
+        (e.g. self.coef_) so this check works automatically."""
+        return any(v.endswith("_") and not v.startswith("__") for v in vars(self))
 
     @property
     @abstractmethod
@@ -79,10 +86,10 @@ class NumpyroModel(ModelBase):
         self.num_chains = num_chains
         self.num_samples = num_samples
         self.num_warmup = num_warmup
-        self.predictive_fn = None  # updated during kernel fitting
-        self.trace = None
-        self.mcmc = None
-        self.lakes = None
+        self.predictive_fn_ = None  # updated during kernel fitting
+        self.trace_ = None
+        self.mcmc_ = None
+        self.lakes_ = None
         self._is_fitted = False
 
     @property
@@ -115,7 +122,7 @@ class NumpyroModel(ModelBase):
         Returns:
             fitted kernel object
         """
-        self.lakes, y_index = y.indexes["lake"], y.indexes["Date"]
+        self.lakes_, y_index = y.indexes["lake"], y.indexes["Date"]
 
         if rng_key is None:
             rng_key = self.get_rng_key()
@@ -132,11 +139,11 @@ class NumpyroModel(ModelBase):
         mcmc.run(rng_key, y=y, y_index=y_index, lags=self.lags, covariates=X)
         samples = mcmc.get_samples()
 
-        self.predictive_fn = Predictive(
+        self.predictive_fn_ = Predictive(
             self.model, samples, return_sites=["y", "y_forecast"]
         )
 
-        self.trace = az.from_numpyro(mcmc, coords=self.coords, dims=self.dims)
+        self.trace_ = az.from_numpyro(mcmc, coords=self.coords, dims=self.dims)
         self._is_fitted = True
 
     @staticmethod
@@ -173,7 +180,7 @@ class NumpyroModel(ModelBase):
 
         # Using future, chop the last `num_steps_forward` values off and treat them as unknown. This allows
         # the covariates to align with the test set
-        forecast_marginal = self.predictive_fn(
+        forecast_marginal = self.predictive_fn_(
             rng_key,
             y=jnp.array(y),
             y_index=y_index,
