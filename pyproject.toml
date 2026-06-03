@@ -1,0 +1,21 @@
+[project]
+name = "nbs-predictor-mvp"
+version = "0.1.0"
+description = "Reproducibility index for figures in NBS predictor MVP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "arviz>=1.1.0",
+    "matplotlib>=3.10.9",
+    "numpyro>=0.21.0",
+    "pandas>=3.0.3",
+    "scikit-learn>=1.9.0",
+    "xarray>=2026.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "jupyter>=1.1.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.15",
+]
