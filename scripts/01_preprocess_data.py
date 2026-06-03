@@ -9,10 +9,7 @@ Run from the project root:
     python scripts/01_preprocess_data.py
 """
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -33,7 +30,7 @@ LAKE_LABELS = {
 lake_data = xr.open_dataarray("data/lake_data.nc")
 
 # --- Figure: Raw RNBS time series ---
-plot_data = (
+rnbs_data = (
     lake_data.sel(variable="rnbs")
     .drop_vars(["variable", "type"])
     .to_dataframe(name="rnbs")
@@ -45,7 +42,7 @@ axs = axs.flatten()
 
 for i, lake in enumerate(LAKE_ORDER):
     ax = axs[i]
-    df = plot_data[plot_data["lake"] == lake].sort_values("Date")
+    df = rnbs_data[rnbs_data["lake"] == lake].sort_values("Date")
     ax.plot(df["Date"], df["rnbs"], lw=0.8)
     ax.set_title(LAKE_LABELS[lake])
     ax.xaxis.set_major_locator(mdates.YearLocator(20))
@@ -61,10 +58,6 @@ print(f"Saved {IMAGES_DIR / 'rnbs_raw.pdf'}")
 # --- Figure: Covariate distributions (Lake Superior) ---
 covar_data = xr.open_dataarray("data/covar_data.nc")
 
-plot_data = covar_data.to_dataframe(
-    dim_order=["Date", "type", "variable"], name="covar"
-).reset_index()
-
 VARIABLE_ORDER = ["precip", "temp", "evap"]
 VARIABLE_LABELS = {
     "precip": "Precipitation (mm)",
@@ -74,17 +67,14 @@ VARIABLE_LABELS = {
 TYPE_ORDER = ["Basin", "Land", "Water"]
 
 fig, axs = plt.subplots(
-    len(VARIABLE_ORDER), len(TYPE_ORDER), figsize=(9, 5), sharex=True
+    len(VARIABLE_ORDER), len(TYPE_ORDER), figsize=(9, 5), sharex=False, sharey=False
 )
 
 for row, var in enumerate(VARIABLE_ORDER):
     for col, typ in enumerate(TYPE_ORDER):
         ax = axs[row, col]
-        subset = plot_data[
-            (plot_data["variable"] == var) & (plot_data["type"] == typ)
-        ].sort_values("Date")
-        ax.plot(subset["Date"], subset["covar"], lw=0.8)
-
+        subset = covar_data.sel(variable=var, type=typ).sortby("Date")
+        ax.plot(subset["Date"], subset, lw=0.8)
         if row == 0:
             ax.set_title(typ)
         if col == 0:
