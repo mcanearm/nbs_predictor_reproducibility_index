@@ -6,7 +6,7 @@ from src.data_loading.data_loading import load_data
 from src.utils import create_rnbs_snapshot
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def lake_data():
     data = (
         load_data(["rnbs", "runoff", "precip", "evap"])
@@ -16,7 +16,7 @@ def lake_data():
     return data.to_array().transpose("Date", "lake", ...)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def snapshot(lake_data):
 
     data_subset = lake_data.dropna("Date")

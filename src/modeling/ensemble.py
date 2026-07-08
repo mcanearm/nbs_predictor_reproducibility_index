@@ -158,9 +158,10 @@ class BoostedRegressor(ModelBase):
     def __init__(self, alpha=0.05, base_regressor=None):
         super().__init__()
         self.alpha = alpha
-        self.base_regressor_ = base_regressor or GradientBoostingRegressor(
-            loss="quantile"
-        )
+        if base_regressor is not None:
+            self.base_regressor = base_regressor
+        else:
+            self.base_regressor = GradientBoostingRegressor(loss="quantile")
         self.models_ = None
 
     @property
@@ -175,9 +176,9 @@ class BoostedRegressor(ModelBase):
         low_alpha, high_alpha = self.alpha / 2, 1 - (self.alpha / 2)
         self.models_ = [
             {
-                "median": clone(self.base_regressor_).set_params(alpha=0.5),
-                "low": clone(self.base_regressor_).set_params(alpha=low_alpha),
-                "high": clone(self.base_regressor_).set_params(alpha=high_alpha),
+                "median": clone(self.base_regressor).set_params(alpha=0.5),
+                "low": clone(self.base_regressor).set_params(alpha=low_alpha),
+                "high": clone(self.base_regressor).set_params(alpha=high_alpha),
             }
             for _ in range(4)  # one for each lake!
         ]

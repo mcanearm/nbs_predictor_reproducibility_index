@@ -33,6 +33,7 @@ class VAR(NumpyroModel):
         num_samples=1000,
         num_warmup=1000,
         lakes=("sup", "mic_hur", "eri", "ont"),
+        progress_bar=True,
     ):
         super().__init__()
         if lags is None:
@@ -43,6 +44,7 @@ class VAR(NumpyroModel):
         self.num_samples = num_samples
         self.num_warmup = num_warmup
         self.lakes = list(lakes)
+        self.progress_bar = progress_bar
         self.predictive_fn_ = None  # updated during model fitting
         self.trace_ = None
         self.mcmc_ = None
@@ -61,6 +63,7 @@ class VAR(NumpyroModel):
         return {
             "intercept": ["month", "lakes"],
             "sigma": ["lakes"],
+            "l_omega": ["series", "lakes"],
             "corr": ["series", "lakes"],
             "theta": ["lakes"],
             **{
@@ -73,7 +76,7 @@ class VAR(NumpyroModel):
 
     @staticmethod
     @numpyro.handlers.reparam(config={"intercept": LocScaleReparam(0)})
-    def model(y, y_index, lags, covariates, future=0):
+    def model(y, months, lags, covariates, future=0):
         """
         Autoregressive process.
         Args:
@@ -106,7 +109,8 @@ class VAR(NumpyroModel):
 
         # correlation stucture for a multivariate T distribution; note that
         # are assuming a t-distribution so we need a "nu" parameter as well.
-        l_omega = numpyro.sample("corr", dist.LKJCholesky(4, concentration=0.5))
+        l_omega = numpyro.sample("l_omega", dist.LKJCholesky(4, concentration=0.5))
+        numpyro.deterministic("corr", l_omega @ l_omega.T)
         sigma = jnp.sqrt(theta)
         L_Omega = sigma[..., None] * l_omega
 
@@ -127,12 +131,7 @@ class VAR(NumpyroModel):
             return new_vals, y_t
 
         prev = y[:max_lag][-ar_lag:]
-        # need to subtract one because indexing starts at 0.
-        months = jnp.array(y_index.month - 1)
         initial_values = prev
-
-        # this tuple includes the months and the covariates, but does not require
-        # the y-values. That's pass under initial values.
 
         covar_tuple = months[max_lag:]
 
@@ -156,6 +155,26 @@ class VARX(VAR):
     def name(self):
         return "VARX"
 
+    @property
+    def coords(self):
+        return {
+            "series": self.lakes,
+            "lakes": self.lakes,
+            "month": list(calendar.month_abbr)[1:],
+            "lag": range(1, self.lags["y"] + 1),
+        }
+
+    @property
+    def dims(self):
+        return {
+            "intercept": ["month", "lakes"],
+            "l_omega": ["series", "lakes"],
+            "corr": ["series", "lakes"],
+            "theta": ["lakes"],
+            "y_alpha": ["series", "lakes", "lag"],
+            "x_alpha": ["variable", "series", "lakes"],
+        }
+
     def load(cls, path):
         pass
 
@@ -164,107 +183,100 @@ class VARX(VAR):
 
     @staticmethod
     @numpyro.handlers.reparam(config={"intercept": LocScaleReparam(0)})
-    def model(y, y_index, lags, covariates, future=0):
+    def model(y, months, lags, covariates, future=0):
         """
-        Autoregressive process.
-        Args:
-            y: the time series to fit
-            covariates: An XArray of covariates for use in the model. Leading index should be date, second index should be lake, and the third index is the actual covariate values.
-            lags: A dictionary indicating which covariates have which lags
-            future: How many periods to run into the future.
+        lags: {"y": ar_lag, "x": x_lag}
+          x_lag=0 → concurrent: use x[t] to predict y[t]
+          x_lag=k → lagged: use x[t-k], …, x[t-1]
+        covariates: dict of jnp arrays, each (T, 4).
 
-        Returns:
-            None - samples
-
+        Shapes:
+          prev_y carry:  (ar_lag, 4)
+          y_alpha:       (out_lake=4, in_lake=4, ar_lag)
+          x_alpha:       (n_covs, 4)            when x_lag=0
+                         (n_covs, 4, x_lag)     when x_lag>0
+          x_for_scan:    (T-ar_lag, n_covs, 4)  when x_lag=0
+                         (T-ar_lag, x_lag, n_covs, 4) when x_lag>0
         """
+        ar_lag = lags["y"]
+        x_lag = lags.get("x", 0)
+
+        x_arr = covariates  # (T, n_covs, 4), pre-stacked in caller-controlled order
+        T, n_covs = x_arr.shape[0], x_arr.shape[1]
+
+        # Pre-slice x aligned with prediction steps [ar_lag, T).
+        # At step t we predict y[ar_lag+t]; x context depends on x_lag.
+        if x_lag == 0:
+            x_for_scan = x_arr[ar_lag:]  # (T-ar_lag, n_covs, 4)
+        else:
+            # oldest-to-most-recent lag window; j=x_lag gives x[ar_lag+t - x_lag]
+            x_for_scan = jnp.stack(
+                [x_arr[ar_lag - j : T - j] for j in range(x_lag, 0, -1)], axis=1
+            )  # (T-ar_lag, x_lag, n_covs, 4)
+
         global_mu = numpyro.sample("global_mu", dist.Normal(0, 1))
         nu = numpyro.sample("nu", dist.HalfNormal(10.0))
-
-        # this effectively removes first first entries from the covariates so that
-        # the total length of the covariates is the same as the length of the y.
-        ar_lag = max_lag = lags.get("y")
-        covars = [
-            jnp.array(covariates.sel(variable=covar))[ar_lag:]
-            for covar, _ in lags.items()
-            if covar != "y"
-        ]
-
         covar_sigma = numpyro.sample("covar_sigma", dist.HalfNormal(1))
-        covar_alphas = [
-            numpyro.sample(
-                f"{cov}_alpha",
-                dist.Normal(0, covar_sigma),
-                sample_shape=(4, 4, lag) if cov == "y" else (4, 4),  # lag at 0
-            )
-            for cov, lag in lags.items()
-        ]
-        theta = numpyro.sample("theta", dist.HalfNormal(5), sample_shape=(4,))
 
+        # y AR weights: full cross-lake VAR matrix per lag step
+        y_alpha = numpyro.sample(
+            "y_alpha", dist.Normal(0, covar_sigma), sample_shape=(4, 4, ar_lag)
+        )  # (out_lake, in_lake, ar_lag)
+
+        # x weights: diagonal lake assumption — covariate v at lake o → output lake o
+        if x_lag == 0:
+            x_alpha = numpyro.sample(
+                "x_alpha", dist.Normal(0, covar_sigma), sample_shape=(n_covs, 4, 4)
+            )  # (n_covs, in_lake, out_lake)
+        else:
+            x_alpha = numpyro.sample(
+                "x_alpha", dist.Normal(0, covar_sigma), sample_shape=(n_covs, 4, 4, x_lag)
+            )  # (n_covs, in_lake, out_lake, x_lag)
+
+        theta = numpyro.sample("theta", dist.HalfNormal(5), sample_shape=(4,))
         intercept_sigma = numpyro.sample("intercept_sigma", dist.HalfNormal(1))
         with numpyro.plate("lakes", size=4):
             with numpyro.plate("months", size=12):
                 intercept = numpyro.sample(
                     "intercept", dist.Normal(global_mu, intercept_sigma)
-                )
+                )  # (12, 4)
 
-        # correlation stucture for a multivariate T distribution; note that
-        # are assuming a t-distribution so we need a "nu" parameter as well.
-        l_omega = numpyro.sample("corr", dist.LKJCholesky(4, concentration=0.5))
-        sigma = jnp.sqrt(theta)
-        L_Omega = sigma[..., None] * l_omega
+        l_omega = numpyro.sample("l_omega", dist.LKJCholesky(4, concentration=0.5))
+        numpyro.deterministic("corr", l_omega @ l_omega.T)
+        L_Omega = jnp.sqrt(theta)[..., None] * l_omega
 
-        def transition_fn(carry, covars):
-            prev_y = carry
-            month_t = covars[0]
+        def transition_fn(carry, scan_input):
+            prev_y = carry  # (ar_lag, 4)
+            month_t = scan_input[0]  # scalar ∈ [0, 11]
+            x_t = scan_input[1]  # (n_covs, 4) or (x_lag, n_covs, 4)
 
-            lagged_series = [prev_y, *[df.T for df in covars[1:]]]
+            # y AR: (out, in, lag) × (lag, in) → (out,)
+            m = jnp.einsum("oij,ji->o", y_alpha.reshape(4, 4, ar_lag), prev_y)
 
-            # generate an empty sum, one for each lake
-            m = jnp.zeros((4,))
+            # x term: full cross-lake — covariate v at input lake i contributes to output lake o
+            if x_lag == 0:
+                # (n_covs, in, out) × (n_covs, in) → (out,)
+                m = m + jnp.einsum("vio,vi->o", x_alpha, x_t)
+            else:
+                # (n_covs, in, out, lag) × (lag, n_covs, in) → (out,)
+                m = m + jnp.einsum("vioj,jvi->o", x_alpha, x_t)
 
-            # bit confusing, but this is a matrix multiplication for each series.
-            # Iterate over each series for the covariates; this also works for the y
-            # values
-            for i in range(len(lags.items())):
-                alphas = covar_alphas[i]
-                dataset = lagged_series[i]
-                if len(alphas.shape) > 2:
-                    for j in jnp.arange(alphas.shape[-1]):
-                        m += jnp.matmul(alphas[:, :, j], dataset[j, :])
-                else:
-                    m += jnp.matmul(alphas, dataset)
-
-            m_t = intercept[month_t, :] + m
             y_t = numpyro.sample(
-                "y", dist.MultivariateStudentT(df=nu, loc=m_t, scale_tril=L_Omega)
+                "y",
+                dist.MultivariateStudentT(
+                    df=nu, loc=intercept[month_t, :] + m, scale_tril=L_Omega
+                ),
             )
 
             if ar_lag > 1:
-                new_vals = jnp.append(prev_y[1:], y_t.reshape(1, -1), axis=0)
+                new_carry = jnp.append(prev_y[1:], y_t.reshape(1, -1), axis=0)
             else:
-                new_vals = y_t.reshape(1, -1)
-            return new_vals, y_t
+                new_carry = y_t.reshape(1, -1)
+            return new_carry, y_t
 
-        prev = y[:max_lag][-ar_lag:]
-        # need to subtract one because indexing starts at 0.
-        months = jnp.array(y_index.month - 1)
-        initial_values = prev
-
-        # this tuple includes the months and the covariates, but does not require
-        # the y-values. That's pass under initial values.
-
-        covar_tuple = (months[max_lag:], *covars)
-
-        if future > 0:
-            y_fit = y[:-future]
-        else:
-            y_fit = y
-
-        # The conditioning here is extremely important, as it tells us
-        # what the actual values are. We start with the first value in the series
-        # for which we have a lagged value and predict forward from there
-        with numpyro.handlers.condition(data={"y": y_fit[max_lag:]}):
-            _, ys = scan(transition_fn, initial_values, covar_tuple)
+        y_fit = y[:-future] if future > 0 else y
+        with numpyro.handlers.condition(data={"y": y_fit[ar_lag:]}):
+            _, ys = scan(transition_fn, y[:ar_lag], (months[ar_lag:], x_for_scan))
 
         if future > 0:
             numpyro.deterministic("y_forecast", ys[-future:])
@@ -288,12 +300,12 @@ class NARX(NumpyroModel):
         pass
 
     @staticmethod
-    def model(y, y_index, lags, covariates, future=0):
+    def model(y, months, lags, covariates, future=0):
         """
         Autoregressive process.
         Args:
             y: the time series to fit
-            covariates: An XArray of covariates for use in the model. Leading index should be date, second index should be lake, and the third index is the actual covariate values.
+            months: jnp array of 0-indexed months (pre-computed from y_index)
             lags: A dictionary indicating which covariates have which lags
             future: How many periods to run into the future.
 
@@ -305,16 +317,13 @@ class NARX(NumpyroModel):
 
         ar_lag = max_lag = lags.get("y")
 
-        lagged_covars = [
-            jnp.array(covariates.sel(variable=covar))[max_lag:]
-            for covar, lag in lags.items()
-            if covar != "y"
-        ]
+        lagged_covars = [covariates[covar][max_lag:] for covar in lags if covar != "y"]
         covars = jnp.concatenate(lagged_covars, axis=-1)
 
         theta = numpyro.sample("theta", dist.HalfNormal(5), sample_shape=(4,))
 
-        l_omega = numpyro.sample("corr", dist.LKJCholesky(4, concentration=0.5))
+        l_omega = numpyro.sample("l_omega", dist.LKJCholesky(4, concentration=0.5))
+        numpyro.deterministic("corr", l_omega @ l_omega.T)
         sigma = jnp.sqrt(theta)
         L_Omega = sigma[..., None] * l_omega
 

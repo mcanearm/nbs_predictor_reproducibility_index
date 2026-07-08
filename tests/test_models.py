@@ -35,7 +35,19 @@ modelList = {
         num_warmup=0,
         num_samples=3,
         num_chains=1,
-        lags={"y": 1, "precip": 1, "evap": 1},  # note
+        lags={"y": 1, "x": 1},  # note
+    ),
+    "VARX_multilag": VARX(
+        num_warmup=0,
+        num_samples=3,
+        num_chains=1,
+        lags={"y": 2, "x": 2},  # note
+    ),
+    "VARX_only_y": VARX(
+        num_warmup=0,
+        num_samples=3,
+        num_chains=1,
+        lags={"y": 1, "x": 0},  # note
     ),
     "GP": Pipeline(
         steps=[

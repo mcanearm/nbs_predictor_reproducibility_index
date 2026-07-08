@@ -142,9 +142,12 @@ class SklearnGPModel(ModelBase):
             base_regressor:
         """
         super().__init__()
-        self.base_regressor_ = base_regressor or GaussianProcessRegressor(
-            kernel=1.0 * kernels.Matern()
-        )
+        if base_regressor is None:
+            self.base_regressor_ = GaussianProcessRegressor(
+                kernel=1.0 * kernels.Matern(nu=1.5) * kernels.RationalQuadratic()
+            )
+        else:
+            self.base_regressor_ = base_regressor
 
     @property
     def name(self):

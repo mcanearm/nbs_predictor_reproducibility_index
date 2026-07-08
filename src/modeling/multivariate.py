@@ -41,7 +41,7 @@ class LakeMVT(NumpyroModel):
         pass
 
     @staticmethod
-    def model(y, y_index, lags, covariates, future=0):
+    def model(y, months, lags, covariates, future=0):
         global_bias = numpyro.sample("global_mu", dist.Normal(0, 3))
 
         theta = numpyro.sample("theta", dist.HalfNormal(5), sample_shape=(4,))
@@ -57,7 +57,6 @@ class LakeMVT(NumpyroModel):
         t_nu = numpyro.sample("t_nu", dist.HalfNormal(10))
 
         # separate out the conditional from the forecasting. Wonky to match other forecasting methods
-        months = (y_index.month - 1).values
         mu = intercept[months]
         N = y.shape[0]
 

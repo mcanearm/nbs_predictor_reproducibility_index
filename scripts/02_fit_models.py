@@ -5,7 +5,7 @@ Fits all candidate models via time-series cross-validation and saves per-model
 per-split prediction CSVs and fitted model artifacts to disk.
 
 Outputs:
-  - data/model_results/{model}_{split}.csv   (one per model × CV split)
+  - data/model_results/{model}_{split}.csv   (one per model x CV split)
   - data/models/{model}_{split}.nc           (Bayesian models, ArviZ NetCDF)
   - data/models/{model}_{split}.pkl          (non-Bayesian models, pickle)
   - data/y_scaler.pkl                        (fitted XArrayStandardScaler for y)
@@ -18,20 +18,21 @@ Set overwrite=True (below) to re-fit models even when saved results exist.
 
 import logging
 import os
-import pickle as pkl
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import arviz as az
+import dill as pkl
+import numpy as np
 import numpyro
+import pandas as pd
 import torch
 import xarray as xr
-from sklearn.gaussian_process import kernels
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.gaussian_process import kernels, GaussianProcessRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
+from tqdm import tqdm
 
 from src.modeling.ensemble import BoostedRegressor, DefaultEnsemble, RandomForest
 from src.modeling.gaussian_process import MultitaskGP, SklearnGPModel
@@ -45,13 +46,16 @@ from src.preprocessing.preprocessing import (
 )
 from src.utils import flatten_array
 
-logging.basicConfig(level=logging.INFO)
+# set global seed for scikit-learn models
+np.random.seed(20250607)
+
+logging.basicConfig(level=logging.WARNING)
 
 device = "cpu"
 torch.set_default_device(device)
 os.environ["JAX_PLATFORM_NAME"] = device
 numpyro.set_platform(device)
-numpyro.set_host_device_count(4)
+numpyro.set_host_device_count(8)
 
 RESULTS_DIR = Path("data/model_results")
 MODEL_DIR = Path("data/models")
@@ -112,13 +116,23 @@ gp_models = {
             (
                 "model",
                 SklearnGPModel(
-                    1.0 * kernels.Matern(nu=1.5) * kernels.RationalQuadratic()
+                    GaussianProcessRegressor(
+                        kernel=1.0
+                        * kernels.Matern(nu=1.5)
+                        * kernels.RationalQuadratic()
+                    )
                 ),
             ),
         ]
     ),
     "MultitaskGP": Pipeline(
-        steps=[("preprocess", preprocessor), ("model", MultitaskGP(epochs=100, rank=1))]
+        steps=[
+            ("preprocess", preprocessor),
+            (
+                "model",
+                MultitaskGP(epochs=100, kernel_args={"rank": 1}),
+            ),
+        ]
     ),
 }
 
@@ -130,7 +144,12 @@ simple_models = {
     "BoostedTrees": Pipeline(
         steps=[
             ("preprocess", preprocessor),
-            ("model", BoostedRegressor(n_estimators=500, learning_rate=0.1)),
+            (
+                "model",
+                BoostedRegressor(
+                    base_regressor=GradientBoostingRegressor(loss="quantile")
+                ),
+            ),
         ]
     ),
     "MVT": Pipeline(steps=[("preprocess", preprocessor), ("model", LakeMVT())]),
@@ -143,10 +162,11 @@ varx_models = {
             (
                 "model",
                 VARX(
-                    lags={"y": 1, "precip": 0, "temp": 0, "evap": 0},
-                    num_warmup=500,
+                    lags={"y": 1, "x": 0},
+                    num_warmup=2500,
                     num_chains=4,
                     num_samples=500,
+                    progress_bar=True,
                 ),
             ),
         ]
@@ -157,10 +177,11 @@ varx_models = {
             (
                 "model",
                 VARX(
-                    lags={"y": 2, "precip": 0, "temp": 0, "evap": 0},
-                    num_warmup=500,
+                    lags={"y": 2, "x": 0},
+                    num_warmup=2500,
                     num_chains=4,
                     num_samples=500,
+                    progress_bar=True,
                 ),
             ),
         ]
@@ -171,10 +192,26 @@ varx_models = {
             (
                 "model",
                 VARX(
-                    lags={"y": 3, "precip": 0, "temp": 0, "evap": 0},
-                    num_warmup=500,
+                    lags={"y": 3, "x": 0},
+                    num_warmup=2500,
                     num_chains=4,
                     num_samples=500,
+                    progress_bar=True,
+                ),
+            ),
+        ]
+    ),
+    "NARX_lag1": Pipeline(
+        steps=[
+            ("preprocess", XArrayStandardScaler()),
+            (
+                "model",
+                VARX(
+                    lags={"y": 1, "x": 0},
+                    num_warmup=2500,
+                    num_chains=4,
+                    num_samples=500,
+                    progress_bar=True,
                 ),
             ),
         ]
@@ -191,33 +228,48 @@ all_models = {
 }
 
 # --- Cross-validation ---
-import pandas as pd
 
 results = []
-for name, model in all_models.items():
-    logging.info(f"Fitting {name} model...")
-    for i, (train_id, test_id) in enumerate(splits):
+model_bar = tqdm(all_models.items(), desc="Models", unit="model", position=0)
+for name, model in model_bar:
+    model_bar.set_postfix_str(name)
+    split_bar = tqdm(
+        enumerate(splits),
+        total=num_splits,
+        desc=name,
+        unit="split",
+        leave=False,
+        position=1,
+    )
+    for i, (train_id, test_id) in split_bar:
         prediction_file = RESULTS_DIR / f"{name}_{i}.csv"
         if prediction_file.exists() and not overwrite:
-            logging.info(f"Loading {name} model (split {i + 1}/{num_splits})")
+            split_bar.set_postfix_str(f"split {i + 1} (cached)")
             predictions = pd.read_csv(prediction_file).assign(split=i + 1)
             predictions["Date"] = pd.to_datetime(predictions["Date"])
         else:
-            logging.info(f"Fitting {name} model (split {i + 1}/{num_splits})")
+            split_bar.set_postfix_str(f"split {i + 1} (fitting)")
             model.fit(X[train_id], y[train_id])
+            for bar in tqdm._instances:
+                if bar.pos > 1:
+                    bar.close()
 
             try:
                 az.to_netcdf(
                     model.named_steps["model"].trace, MODEL_DIR / f"{name}_{i}.nc"
                 )
             except AttributeError:
-                with open(MODEL_DIR / f"{name}_{i}.pkl", "wb") as f:
-                    pkl.dump(model, f)
+                try:
+                    with open(MODEL_DIR / f"{name}_{i}.pkl", "wb") as f:
+                        pkl.dump(model, f)
+                except Exception as e:
+                    tqdm.write(
+                        f"Warning: could not save {name} split {i + 1} artifact: {e}"
+                    )
             except Exception as e:
-                logging.warning(
-                    f"Failed to save model {name} (split {i + 1}/{num_splits}): {e}"
+                tqdm.write(
+                    f"Warning: could not save {name} split {i + 1} artifact: {e}"
                 )
-                continue
 
             preds = model.predict(
                 X[: max(test_id) + 1],
@@ -245,4 +297,4 @@ for name, model in all_models.items():
         results.append(predictions)
 
 cv_results = pd.concat(results, axis=0)
-logging.info(f"Cross-validation complete. {len(cv_results)} rows saved to {RESULTS_DIR}")
+tqdm.write(f"Cross-validation complete. {len(cv_results)} rows saved to {RESULTS_DIR}")

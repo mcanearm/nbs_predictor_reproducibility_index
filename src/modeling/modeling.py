@@ -3,10 +3,10 @@ from abc import ABC, abstractmethod
 import arviz as az
 import numpy as np
 import xarray as xr
+import jax
 from jax import numpy as jnp
-from jax.random import PRNGKey
 from numpyro.diagnostics import hpdi
-from numpyro.infer import MCMC, NUTS, Predictive
+from numpyro.infer import MCMC, NUTS, Predictive, init_to_median
 from sklearn.base import BaseEstimator
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -78,12 +78,16 @@ class NumpyroModel(ModelBase):
         num_chains=4,
         num_samples=1000,
         num_warmup=1000,
+        progress_bar=True,
+        chain_method="vectorized",
     ):
         super().__init__()
         self.lags = lags or {}
         self.num_chains = num_chains
         self.num_samples = num_samples
         self.num_warmup = num_warmup
+        self.progress_bar = progress_bar
+        self.chain_method = chain_method
         self.predictive_fn_ = None  # updated during kernel fitting
         self.trace_ = None
         self.mcmc_ = None
@@ -125,16 +129,30 @@ class NumpyroModel(ModelBase):
         if rng_key is None:
             rng_key = self.get_rng_key()
 
-        y = jnp.array(y)
-        kernel = NUTS(self.model)
+        y_arr = jnp.array(y)
+        months = jnp.array(y_index.month - 1)
+        if "variable" in getattr(X, "dims", ()):
+            self.cov_names_ = list(X.coords["variable"].values)
+            covariates = jnp.stack(
+                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=1
+            )
+        else:
+            covariates = X
 
+        kernel = NUTS(
+            self.model,
+            init_strategy=init_to_median(num_samples=15),
+            dense_mass=True,
+        )
         mcmc = MCMC(
             kernel,
             num_warmup=self.num_warmup,
             num_samples=self.num_samples,
             num_chains=self.num_chains,
+            progress_bar=self.progress_bar,
+            chain_method=self.chain_method,
         )
-        mcmc.run(rng_key, y=y, y_index=y_index, lags=self.lags, covariates=X)
+        mcmc.run(rng_key, y=y_arr, months=months, lags=self.lags, covariates=covariates)
         samples = mcmc.get_samples()
 
         self.predictive_fn_ = Predictive(
@@ -146,7 +164,7 @@ class NumpyroModel(ModelBase):
 
     @staticmethod
     @abstractmethod
-    def model(y, y_index, lags, covariates, future=0):
+    def model(y, months, lags, covariates, future=0):
         """
         Model method. Must be static to work with Numpyro MCMC.
         Args:
@@ -161,7 +179,7 @@ class NumpyroModel(ModelBase):
         """
         pass
 
-    def predict(self, X, y=None, forecast_steps=12, rng_key=None, *args, **kwargs):
+    def predict(self, X, y, forecast_steps=12, rng_key=None, *args, **kwargs):
         """
 
         Args:
@@ -176,13 +194,19 @@ class NumpyroModel(ModelBase):
         if rng_key is None:
             rng_key = self.get_rng_key()
 
-        # Using future, chop the last `num_steps_forward` values off and treat them as unknown. This allows
-        # the covariates to align with the test set
+        months = jnp.array(y_index.month - 1)
+        if hasattr(self, "cov_names_"):
+            covariates = jnp.stack(
+                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=1
+            )
+        else:
+            covariates = X
+
         forecast_marginal = self.predictive_fn_(
             rng_key,
             y=jnp.array(y),
-            y_index=y_index,
-            covariates=X,
+            months=months,
+            covariates=covariates,
             lags=self.lags,
             future=forecast_steps,
         )["y_forecast"]
@@ -197,7 +221,7 @@ class NumpyroModel(ModelBase):
         return results
 
     def get_rng_key(self):
-        return PRNGKey(np.random.randint(1e3))
+        return jax.random.key(np.random.randint(1e6))
 
 
 def split_data(data, target_column):

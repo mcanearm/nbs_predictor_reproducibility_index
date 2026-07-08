@@ -6,7 +6,7 @@ generates all tables and figures used in the paper.
 
 Inputs:
   - data/model_results/{model}_{split}.csv
-  - data/models/VARX_9.nc                  (for correlation / trace plots)
+  - data/models/VARX_9.pkl                  (for correlation / trace plots)
   - data/y_scaler.pkl
 
 Outputs (all written to images/):
@@ -138,15 +138,25 @@ print(
 
 # --- Table: Overall performance ---
 print("\n=== Overall model performance ===")
-print(scaled_data.groupby(["model"]).apply(summarize, include_groups=False).round(3).to_string())
+print(
+    scaled_data.groupby(["model"])
+    .apply(summarize, include_groups=False)
+    .round(3)
+    .to_string()
+)
+
 
 # --- Table: CRPS (LaTeX) ---
 def rollup_agg(df, groupings, fn=summarize):
     full_groupings = (
-        df.groupby(groupings, observed=False).apply(fn, include_groups=False).reset_index()
+        df.groupby(groupings, observed=False)
+        .apply(fn, include_groups=False)
+        .reset_index()
     )
     all_groupings = (
-        df.groupby(groupings[:-1], observed=False).apply(fn, include_groups=False).reset_index()
+        df.groupby(groupings[:-1], observed=False)
+        .apply(fn, include_groups=False)
+        .reset_index()
     )
     all_groupings[groupings[-1]] = "All"
     return pd.concat(
@@ -195,8 +205,7 @@ def facet_rename(x):
 
 
 unscaled_plot_data = scaled_data[
-    (scaled_data["model"].isin(MODEL_ORDER))
-    & (scaled_data["split"] >= 6)
+    (scaled_data["model"].isin(MODEL_ORDER)) & (scaled_data["split"] >= 6)
 ].copy()
 
 models_present = [m for m in MODEL_ORDER if m in unscaled_plot_data["model"].unique()]
@@ -223,8 +232,12 @@ for row, model in enumerate(models_present):
         ax.plot(subset["Date"], subset["true"], color="black", lw=0.8, label="Observed")
         ax.plot(subset["Date"], subset["mean"], color="red", lw=0.8, label="Forecast")
         ax.fill_between(
-            subset["Date"], subset["lower"], subset["upper"],
-            color="red", alpha=0.25, label="95% CI",
+            subset["Date"],
+            subset["lower"],
+            subset["upper"],
+            color="red",
+            alpha=0.25,
+            label="95% CI",
         )
 
         if row == 0:
@@ -287,11 +300,13 @@ plt.close()
 print(f"Saved {IMAGES_DIR / 'ar_comparison.pdf'}")
 
 # --- Figure: VARX correlation matrix (posterior) ---
-trace_path = MODEL_DIR / "VARX_9.nc"
-if not trace_path.exists():
-    print(f"\nSkipping correlation/trace plots: {trace_path} not found.")
+varx_model_path = MODEL_DIR / "VARX_9.pkl"
+if not varx_model_path.exists():
+    print(f"\nSkipping correlation/trace plots: {varx_model_path} not found.")
 else:
-    trace = az.from_netcdf(trace_path)
+    with open(varx_model_path, "rb") as f:
+        varx_model = pkl.load(f)
+    trace = varx_model["model"].trace_
 
     valid_set = [
         ("sup", "sup"),
@@ -342,7 +357,9 @@ else:
 
         if row == 3:
             ax.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
-            ax.set_xticklabels(["–1.0", "–0.5", "0", "0.5", "1.0"], ha="center", fontsize=8)
+            ax.set_xticklabels(
+                ["–1.0", "–0.5", "0", "0.5", "1.0"], ha="center", fontsize=8
+            )
         else:
             ax.set_xticks([])
             ax.tick_params(axis="x", labelsize=0)
@@ -362,7 +379,9 @@ else:
                 textcoords="offset points",
             )
 
-    plt.subplots_adjust(wspace=0.0, hspace=0.0, left=0.20, right=0.95, top=0.95, bottom=0.08)
+    plt.subplots_adjust(
+        wspace=0.0, hspace=0.0, left=0.20, right=0.95, top=0.95, bottom=0.08
+    )
     plt.savefig(str(IMAGES_DIR / "correlation_matrices.pdf"))
     plt.close()
     print(f"Saved {IMAGES_DIR / 'correlation_matrices.pdf'}")
