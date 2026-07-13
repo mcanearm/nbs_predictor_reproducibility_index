@@ -17,11 +17,39 @@ __all__ = [
     # Classes
     "ModelBase",
     "NumpyroModel",
+    "ScaledTarget",
     # Functions
     "split_data",
     "train_model",
     "evaluate_model",
 ]
+
+
+class ScaledTarget:
+    def __init__(self, model):
+        self.model = model
+
+    def fit(self, X, y, **kwargs):
+        # compute per-lake mean/std on the TRAIN y only, keep as xarray-friendly
+        self.y_mean_ = y.mean(dim="Date")
+        self.y_std_ = y.std(dim="Date")
+        y_scaled = (y - self.y_mean_) / self.y_std_  # still xarray, indexes intact
+        self.model.fit(X, y_scaled, **kwargs)
+        return self
+
+    def predict(self, X, y, **kwargs):
+        preds_scaled = self.model.predict(
+            X=X, y=y, **kwargs
+        )  # or however your predict returns
+
+        unscaled_preds = self.y_mean_ + self.y_std_ * preds_scaled.sel(
+            value=["mean", "lower", "upper"]
+        )
+        unscaled_sd = self.y_std_ * preds_scaled.sel(value="std")
+
+        return xr.concat([unscaled_preds, unscaled_sd], dim="value").transpose(
+            "Date", "lake", "value"
+        )
 
 
 class ModelBase(BaseEstimator, ABC):
@@ -79,7 +107,7 @@ class NumpyroModel(ModelBase):
         num_samples=1000,
         num_warmup=1000,
         progress_bar=True,
-        chain_method="vectorized",
+        chain_method="parallel",
     ):
         super().__init__()
         self.lags = lags or {}
@@ -93,6 +121,7 @@ class NumpyroModel(ModelBase):
         self.mcmc_ = None
         self.lakes_ = None
         self._is_fitted = False
+        self.cov_names_ = None
 
     @property
     def is_fitted(self):
@@ -134,16 +163,12 @@ class NumpyroModel(ModelBase):
         if "variable" in getattr(X, "dims", ()):
             self.cov_names_ = list(X.coords["variable"].values)
             covariates = jnp.stack(
-                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=1
+                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=-1
             )
         else:
             covariates = X
 
-        kernel = NUTS(
-            self.model,
-            init_strategy=init_to_median(num_samples=15),
-            dense_mass=True,
-        )
+        kernel = NUTS(self.model)
         mcmc = MCMC(
             kernel,
             num_warmup=self.num_warmup,
@@ -197,7 +222,7 @@ class NumpyroModel(ModelBase):
         months = jnp.array(y_index.month - 1)
         if hasattr(self, "cov_names_"):
             covariates = jnp.stack(
-                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=1
+                [jnp.array(X.sel(variable=v).values) for v in self.cov_names_], axis=-1
             )
         else:
             covariates = X

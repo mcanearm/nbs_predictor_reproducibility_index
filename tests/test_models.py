@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 import xarray as xr
-from sklearn.gaussian_process import kernels as k
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, SplineTransformer
+from sklearn.compose import TransformedTargetRegressor
 
 from src.preprocessing.preprocessing import XArrayAdapter, XArrayStandardScaler
 from src.modeling.ensemble import (
@@ -19,34 +19,46 @@ from src.modeling.gaussian_process import (
 )
 from src.modeling.lm import LinearModel
 from src.modeling.metrics import summarize
-from src.modeling.modeling import ModelBase
+from src.modeling.modeling import ModelBase, ScaledTarget
 from src.modeling.multivariate import LakeMVT
 from src.modeling.var_models import NARX, VARX, VAR
 from src.postprocessing.postprocessing import output_forecast_results
 from src.utils import flatten_array
-from tests.conftest import skip_tests
 
 modelList = {
     "DefaultEnsemble": DefaultEnsemble(),
     "MVN": LakeMVT(num_warmup=0, num_samples=3, num_chains=1),
     "VAR": VAR(num_warmup=0, num_samples=3, num_chains=1, lags={"y": 2}),
-    "NARX": NARX(num_warmup=0, num_samples=3, num_chains=1, lags={"y": 2, "precip": 2}),
+    "NARX": Pipeline(
+        [
+            ("flatten", FunctionTransformer(flatten_array)),
+            (
+                "model",
+                NARX(
+                    num_warmup=0,
+                    num_samples=3,
+                    num_chains=1,
+                    lags={"y": 2, "precip": 2},
+                ),
+            ),
+        ]
+    ),
     "VARX": VARX(
         num_warmup=0,
-        num_samples=3,
-        num_chains=1,
+        num_samples=5,
+        num_chains=2,
         lags={"y": 1, "x": 1},  # note
     ),
     "VARX_multilag": VARX(
         num_warmup=0,
-        num_samples=3,
-        num_chains=1,
+        num_samples=5,
+        num_chains=2,
         lags={"y": 2, "x": 2},  # note
     ),
     "VARX_only_y": VARX(
         num_warmup=0,
-        num_samples=3,
-        num_chains=1,
+        num_samples=5,
+        num_chains=2,
         lags={"y": 1, "x": 0},  # note
     ),
     "GP": Pipeline(
@@ -106,13 +118,14 @@ def preprocessor():
 @pytest.mark.skipif(False, reason="Skip kernel fits")
 @pytest.mark.parametrize("model", modelList.values(), ids=modelList.keys())
 def test_model_fit(model: ModelBase, snapshot, preprocessor):
-    y_scaler = XArrayStandardScaler()
-    train_y = y_scaler.fit_transform(snapshot.train_y)
-    test_y = y_scaler.transform(snapshot.test_y)
-    full_pipeline = Pipeline([("preprocess", preprocessor), ("model", model)])
-    full_pipeline.fit(y=train_y, X=snapshot.train_x)
+    full_pipeline = ScaledTarget(
+        Pipeline([("preprocess", preprocessor), ("model", model)])
+    )
+    full_pipeline.fit(y=snapshot.train_y, X=snapshot.train_x)
 
-    results = full_pipeline.predict(X=snapshot.test_x, y=test_y, forecast_steps=24)
+    results = full_pipeline.predict(
+        X=snapshot.test_x, y=snapshot.test_y, forecast_steps=24
+    )
 
     # dim should be forecast length (24), lakes (4) and output_values (4),
     # which are mean, lower, upper, and std

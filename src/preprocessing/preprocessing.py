@@ -58,6 +58,7 @@ class XArrayStandardScaler(BaseEstimator, TransformerMixin):
         self : object
             Returns the instance itself.
         """
+        # Just assume the first dimension is time - it always is for our analysis
         assert X.dims[0] == "Date"
 
         self.means_ = X.mean("Date")

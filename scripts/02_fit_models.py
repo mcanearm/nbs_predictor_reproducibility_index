@@ -20,7 +20,6 @@ import logging
 import os
 from pathlib import Path
 
-import arviz as az
 import dill as pkl
 import numpy as np
 import numpyro
@@ -31,7 +30,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.gaussian_process import kernels, GaussianProcessRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.compose import TransformedTargetRegressor
 from tqdm import tqdm
 
 from src.modeling.ensemble import BoostedRegressor, DefaultEnsemble, RandomForest
@@ -67,6 +67,8 @@ overwrite = False
 # --- Data loading ---
 lake_data = xr.open_dataarray("data/lake_data.nc")
 
+# we do 13 forecast steps so that each month isn't always predicted ahead the exact
+# same amount of time
 num_splits = 10
 forecast_steps = 13
 
@@ -85,13 +87,6 @@ test_x, test_y = (
     test_data.sel(variable=["rnbs"]).squeeze().drop_vars(["type", "variable"]),
 )
 
-y_scaler = XArrayStandardScaler()
-y = y_scaler.fit_transform(y)
-test_y = y_scaler.transform(test_y)
-
-with open(Path("data") / "y_scaler.pkl", "wb") as f:
-    pkl.dump(y_scaler, f)
-logging.info("Saved y_scaler to data/y_scaler.pkl")
 
 # --- Model definitions ---
 preprocessor = XArrayFeatureUnion(
@@ -110,117 +105,142 @@ preprocessor = XArrayFeatureUnion(
 )
 
 gp_models = {
-    "GP_Matern": Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            (
-                "model",
-                SklearnGPModel(
-                    GaussianProcessRegressor(
-                        kernel=1.0
-                        * kernels.Matern(nu=1.5)
-                        * kernels.RationalQuadratic()
-                    )
+    "GP_Matern": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocessor", preprocessor),
+                (
+                    "model",
+                    SklearnGPModel(
+                        GaussianProcessRegressor(
+                            kernel=1.0
+                            * kernels.Matern(nu=1.5)
+                            * kernels.RationalQuadratic()
+                        )
+                    ),
                 ),
-            ),
-        ]
+            ]
+        ),
+        transformer=StandardScaler(),
     ),
-    "MultitaskGP": Pipeline(
-        steps=[
-            ("preprocess", preprocessor),
-            (
-                "model",
-                MultitaskGP(epochs=100, kernel_args={"rank": 1}),
-            ),
-        ]
+    "MultitaskGP": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", preprocessor),
+                (
+                    "model",
+                    MultitaskGP(epochs=100, kernel_args={"rank": 1}),
+                ),
+            ]
+        ),
+        transformer=StandardScaler(),
     ),
 }
 
 simple_models = {
-    "SimpleLM": Pipeline(
-        steps=[("preprocess", preprocessor), ("model", LinearModel())]
+    "SimpleLM": TransformedTargetRegressor(
+        Pipeline(steps=[("preprocess", preprocessor), ("model", LinearModel())]),
+        transformer=StandardScaler(),
     ),
-    "RF": Pipeline(steps=[("preprocess", preprocessor), ("model", RandomForest())]),
-    "BoostedTrees": Pipeline(
-        steps=[
-            ("preprocess", preprocessor),
-            (
-                "model",
-                BoostedRegressor(
-                    base_regressor=GradientBoostingRegressor(loss="quantile")
+    "RF": TransformedTargetRegressor(
+        Pipeline(steps=[("preprocess", preprocessor), ("model", RandomForest())]),
+        transformer=StandardScaler(),
+    ),
+    "BoostedTrees": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", preprocessor),
+                (
+                    "model",
+                    BoostedRegressor(
+                        base_regressor=GradientBoostingRegressor(loss="quantile")
+                    ),
                 ),
-            ),
-        ]
+            ]
+        ),
+        transformer=StandardScaler(),
     ),
-    "MVT": Pipeline(steps=[("preprocess", preprocessor), ("model", LakeMVT())]),
+    "MVT": TransformedTargetRegressor(
+        Pipeline(steps=[("preprocess", preprocessor), ("model", LakeMVT())]),
+        transformer=StandardScaler(),
+    ),
 }
 
 varx_models = {
-    "VARX": Pipeline(
-        steps=[
-            ("preprocess", XArrayStandardScaler()),
-            (
-                "model",
-                VARX(
-                    lags={"y": 1, "x": 0},
-                    num_warmup=2500,
-                    num_chains=4,
-                    num_samples=500,
-                    progress_bar=True,
+    "VARX": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", XArrayStandardScaler()),
+                (
+                    "model",
+                    VARX(
+                        lags={"y": 1},
+                        num_warmup=2500,
+                        num_chains=4,
+                        num_samples=500,
+                    ),
                 ),
-            ),
-        ]
+            ],
+        ),
+        transformer=StandardScaler(),
     ),
-    "VARX_lag2": Pipeline(
-        steps=[
-            ("preprocess", XArrayStandardScaler()),
-            (
-                "model",
-                VARX(
-                    lags={"y": 2, "x": 0},
-                    num_warmup=2500,
-                    num_chains=4,
-                    num_samples=500,
-                    progress_bar=True,
+    "VARX_lag2": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", XArrayStandardScaler()),
+                (
+                    "model",
+                    VARX(
+                        lags={"y": 2},
+                        num_warmup=2500,
+                        num_chains=4,
+                        num_samples=500,
+                    ),
                 ),
-            ),
-        ]
+            ],
+        ),
+        transformer=StandardScaler(),
     ),
-    "VARX_lag3": Pipeline(
-        steps=[
-            ("preprocess", XArrayStandardScaler()),
-            (
-                "model",
-                VARX(
-                    lags={"y": 3, "x": 0},
-                    num_warmup=2500,
-                    num_chains=4,
-                    num_samples=500,
-                    progress_bar=True,
+    "VARX_lag3": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", XArrayStandardScaler()),
+                (
+                    "model",
+                    VARX(
+                        lags={"y": 3},
+                        num_warmup=2500,
+                        num_chains=4,
+                        num_samples=500,
+                    ),
                 ),
-            ),
-        ]
+            ]
+        ),
+        transformer=StandardScaler(),
     ),
-    "NARX_lag1": Pipeline(
-        steps=[
-            ("preprocess", XArrayStandardScaler()),
-            (
-                "model",
-                VARX(
-                    lags={"y": 1, "x": 0},
-                    num_warmup=2500,
-                    num_chains=4,
-                    num_samples=500,
-                    progress_bar=True,
+    "NARX_lag1": TransformedTargetRegressor(
+        Pipeline(
+            steps=[
+                ("preprocess", XArrayStandardScaler()),
+                (
+                    "model",
+                    VARX(
+                        lags={"y": 1, "precip": 0, "evap": 0, "temp": 0},
+                        num_warmup=2500,
+                        num_chains=4,
+                        num_samples=500,
+                    ),
                 ),
-            ),
-        ]
+            ]
+        ),
+        transformer=StandardScaler(),
     ),
 }
 
 all_models = {
-    "Default": Pipeline(
-        steps=[("preprocessor", preprocessor), ("model", DefaultEnsemble())]
+    "Default": TransformedTargetRegressor(
+        Pipeline(steps=[("preprocessor", preprocessor), ("model", DefaultEnsemble())]),
+        transformer=StandardScaler(),
     ),
     **simple_models,
     **gp_models,
@@ -254,22 +274,8 @@ for name, model in model_bar:
                 if bar.pos > 1:
                     bar.close()
 
-            try:
-                az.to_netcdf(
-                    model.named_steps["model"].trace, MODEL_DIR / f"{name}_{i}.nc"
-                )
-            except AttributeError:
-                try:
-                    with open(MODEL_DIR / f"{name}_{i}.pkl", "wb") as f:
-                        pkl.dump(model, f)
-                except Exception as e:
-                    tqdm.write(
-                        f"Warning: could not save {name} split {i + 1} artifact: {e}"
-                    )
-            except Exception as e:
-                tqdm.write(
-                    f"Warning: could not save {name} split {i + 1} artifact: {e}"
-                )
+            with open(MODEL_DIR / f"{name}_{i}.pkl", "wb") as f:
+                pkl.dump(model, f)
 
             preds = model.predict(
                 X[: max(test_id) + 1],
