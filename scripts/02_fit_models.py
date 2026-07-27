@@ -30,12 +30,12 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.gaussian_process import kernels, GaussianProcessRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer, StandardScaler
-from sklearn.compose import TransformedTargetRegressor
+from sklearn.preprocessing import FunctionTransformer
 from tqdm import tqdm
 
 from src.modeling.ensemble import BoostedRegressor, DefaultEnsemble, RandomForest
 from src.modeling.gaussian_process import MultitaskGP, SklearnGPModel
+from src.modeling.modeling import ScaledTarget
 from src.modeling.lm import LinearModel
 from src.modeling.multivariate import LakeMVT
 from src.modeling.var_models import VARX
@@ -55,7 +55,7 @@ device = "cpu"
 torch.set_default_device(device)
 os.environ["JAX_PLATFORM_NAME"] = device
 numpyro.set_platform(device)
-numpyro.set_host_device_count(8)
+numpyro.set_host_device_count(4)
 
 RESULTS_DIR = Path("data/model_results")
 MODEL_DIR = Path("data/models")
@@ -105,142 +105,113 @@ preprocessor = XArrayFeatureUnion(
 )
 
 gp_models = {
-    "GP_Matern": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocessor", preprocessor),
-                (
-                    "model",
-                    SklearnGPModel(
-                        GaussianProcessRegressor(
-                            kernel=1.0
-                            * kernels.Matern(nu=1.5)
-                            * kernels.RationalQuadratic()
-                        )
-                    ),
+    "GP_Matern": Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            (
+                "model",
+                SklearnGPModel(
+                    GaussianProcessRegressor(
+                        kernel=1.0
+                        * kernels.Matern(nu=1.5)
+                        * kernels.RationalQuadratic()
+                    )
                 ),
-            ]
-        ),
-        transformer=StandardScaler(),
+            ),
+        ]
     ),
-    "MultitaskGP": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", preprocessor),
-                (
-                    "model",
-                    MultitaskGP(epochs=100, kernel_args={"rank": 1}),
-                ),
-            ]
-        ),
-        transformer=StandardScaler(),
+    "MultitaskGP": Pipeline(
+        steps=[
+            ("preprocess", preprocessor),
+            (
+                "model",
+                MultitaskGP(epochs=100, kernel_args={"rank": 1}),
+            ),
+        ]
     ),
 }
 
 simple_models = {
-    "SimpleLM": TransformedTargetRegressor(
-        Pipeline(steps=[("preprocess", preprocessor), ("model", LinearModel())]),
-        transformer=StandardScaler(),
+    "SimpleLM": Pipeline(
+        steps=[("preprocess", preprocessor), ("model", LinearModel())]
     ),
-    "RF": TransformedTargetRegressor(
-        Pipeline(steps=[("preprocess", preprocessor), ("model", RandomForest())]),
-        transformer=StandardScaler(),
-    ),
-    "BoostedTrees": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", preprocessor),
-                (
-                    "model",
-                    BoostedRegressor(
-                        base_regressor=GradientBoostingRegressor(loss="quantile")
-                    ),
+    "RF": Pipeline(steps=[("preprocess", preprocessor), ("model", RandomForest())]),
+    "BoostedTrees": Pipeline(
+        steps=[
+            ("preprocess", preprocessor),
+            (
+                "model",
+                BoostedRegressor(
+                    base_regressor=GradientBoostingRegressor(loss="quantile")
                 ),
-            ]
-        ),
-        transformer=StandardScaler(),
+            ),
+        ]
     ),
-    "MVT": TransformedTargetRegressor(
-        Pipeline(steps=[("preprocess", preprocessor), ("model", LakeMVT())]),
-        transformer=StandardScaler(),
-    ),
+    "MVT": Pipeline(steps=[("preprocess", preprocessor), ("model", LakeMVT())]),
 }
 
 varx_models = {
-    "VARX": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", XArrayStandardScaler()),
-                (
-                    "model",
-                    VARX(
-                        lags={"y": 1},
-                        num_warmup=2500,
-                        num_chains=4,
-                        num_samples=500,
-                    ),
+    "VARX": Pipeline(
+        steps=[
+            ("preprocess", XArrayStandardScaler()),
+            (
+                "model",
+                VARX(
+                    lags={"y": 1},
+                    num_warmup=2500,
+                    num_chains=4,
+                    num_samples=500,
                 ),
-            ],
-        ),
-        transformer=StandardScaler(),
+            ),
+        ],
     ),
-    "VARX_lag2": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", XArrayStandardScaler()),
-                (
-                    "model",
-                    VARX(
-                        lags={"y": 2},
-                        num_warmup=2500,
-                        num_chains=4,
-                        num_samples=500,
-                    ),
+    "VARX_lag2": Pipeline(
+        steps=[
+            ("preprocess", XArrayStandardScaler()),
+            (
+                "model",
+                VARX(
+                    lags={"y": 2},
+                    num_warmup=2500,
+                    num_chains=4,
+                    num_samples=500,
                 ),
-            ],
-        ),
-        transformer=StandardScaler(),
+            ),
+        ],
     ),
-    "VARX_lag3": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", XArrayStandardScaler()),
-                (
-                    "model",
-                    VARX(
-                        lags={"y": 3},
-                        num_warmup=2500,
-                        num_chains=4,
-                        num_samples=500,
-                    ),
+    "VARX_lag3": Pipeline(
+        steps=[
+            ("preprocess", XArrayStandardScaler()),
+            (
+                "model",
+                VARX(
+                    lags={"y": 3},
+                    num_warmup=2500,
+                    num_chains=4,
+                    num_samples=500,
                 ),
-            ]
-        ),
-        transformer=StandardScaler(),
+            ),
+        ]
     ),
-    "NARX_lag1": TransformedTargetRegressor(
-        Pipeline(
-            steps=[
-                ("preprocess", XArrayStandardScaler()),
-                (
-                    "model",
-                    VARX(
-                        lags={"y": 1, "precip": 0, "evap": 0, "temp": 0},
-                        num_warmup=2500,
-                        num_chains=4,
-                        num_samples=500,
-                    ),
+    "NARX_lag1": Pipeline(
+        steps=[
+            ("preprocess", XArrayStandardScaler()),
+            (
+                "model",
+                VARX(
+                    lags={"y": 1, "precip": 0, "evap": 0, "temp": 0},
+                    num_warmup=2500,
+                    num_chains=4,
+                    num_samples=500,
                 ),
-            ]
-        ),
-        transformer=StandardScaler(),
+            ),
+        ]
     ),
 }
 
 all_models = {
-    "Default": TransformedTargetRegressor(
-        Pipeline(steps=[("preprocessor", preprocessor), ("model", DefaultEnsemble())]),
-        transformer=StandardScaler(),
+    "Default": Pipeline(
+        steps=[("preprocessor", preprocessor), ("model", DefaultEnsemble())]
     ),
     **simple_models,
     **gp_models,
@@ -268,23 +239,28 @@ for name, model in model_bar:
             predictions = pd.read_csv(prediction_file).assign(split=i + 1)
             predictions["Date"] = pd.to_datetime(predictions["Date"])
         else:
+            scale_model = ScaledTarget(model)  # wrap model to scale y
             split_bar.set_postfix_str(f"split {i + 1} (fitting)")
-            model.fit(X[train_id], y[train_id])
+            scale_model.fit(X[train_id], y[train_id])
             for bar in tqdm._instances:
                 if bar.pos > 1:
                     bar.close()
 
             with open(MODEL_DIR / f"{name}_{i}.pkl", "wb") as f:
-                pkl.dump(model, f)
+                pkl.dump(scale_model, f)
 
-            preds = model.predict(
+            # note: by default here, we are returning the SCALED predictions. To return the original scale,
+            # set return_original_scale=True in the predict() call below
+            preds = scale_model.predict(
                 X[: max(test_id) + 1],
                 y=y[: max(test_id) + 1],
                 forecast_steps=forecast_steps,
             )
 
+            scaled_true = (y[test_id] - scale_model.y_mean_) / scale_model.y_std_
+
             array = xr.concat(
-                [preds, y[test_id].expand_dims({"value": ["true"]}, axis=-1)],
+                [preds, scaled_true.expand_dims({"value": ["true"]}, axis=-1)],
                 dim="value",
             )
 

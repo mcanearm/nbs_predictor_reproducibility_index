@@ -3,7 +3,7 @@ import pytest
 import xarray as xr
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, SplineTransformer
-from sklearn.compose import TransformedTargetRegressor
+import dill as pkl
 
 from src.preprocessing.preprocessing import XArrayAdapter, XArrayStandardScaler
 from src.modeling.ensemble import (
@@ -115,9 +115,8 @@ def preprocessor():
     return Pipeline([("scaler", XArrayStandardScaler())])
 
 
-@pytest.mark.skipif(False, reason="Skip kernel fits")
 @pytest.mark.parametrize("model", modelList.values(), ids=modelList.keys())
-def test_model_fit(model: ModelBase, snapshot, preprocessor):
+def test_model_fit(model, snapshot, preprocessor, tmp_path):
     full_pipeline = ScaledTarget(
         Pipeline([("preprocess", preprocessor), ("model", model)])
     )
@@ -134,6 +133,16 @@ def test_model_fit(model: ModelBase, snapshot, preprocessor):
     assert (snapshot.test_index[-24:] == results.indexes["Date"]).all()
     # ensure that this is random and not just conditioning on the last value
     assert (results[-1, :, 0] != snapshot.test_y[-1, :]).all()
+
+    with open(tmp_path / "model.pkl", "wb") as f:
+        pkl.dump(full_pipeline, f)
+    with open(tmp_path / "model.pkl", "rb") as f:
+        loaded_model = pkl.load(f)
+
+    loaded_results = loaded_model.predict(
+        X=snapshot.test_x, y=snapshot.test_y, forecast_steps=24
+    )
+    assert results.shape == loaded_results.shape
 
 
 def test_forecaster_output_format(snapshot):

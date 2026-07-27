@@ -364,3 +364,45 @@ class MultitaskGP(ModelBase):
     @classmethod
     def load(cls, path):
         pass
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if self.kernel_ is not None:
+            state["_kernel_state_dict"] = self.kernel_.state_dict()
+            state["_likelihood_state_dict"] = self.likelihood_.state_dict()
+            state["_train_x"] = self.kernel_.train_inputs[0]
+            state["_train_y"] = self.kernel_.train_targets
+        # drop the live, unpicklable GPyTorch/optimizer objects
+        for key in ("kernel_", "likelihood_", "optim_", "mll_"):
+            state.pop(key, None)
+        return state
+
+    def __setstate__(self, state):
+        train_x = state.pop("_train_x", None)
+        train_y = state.pop("_train_y", None)
+        kernel_state = state.pop("_kernel_state_dict", None)
+        likelihood_state = state.pop("_likelihood_state_dict", None)
+
+        self.__dict__.update(state)
+
+        if kernel_state is not None:
+            self.likelihood_ = gpytorch.likelihoods.MultitaskGaussianLikelihood(
+                num_tasks=train_y.shape[1]
+            )
+            self.kernel_ = GPyTorchKernel(
+                train_x,
+                train_y,
+                self.likelihood_,
+                num_tasks=train_y.shape[1],
+                **self.kernel_args,
+            )
+            self.kernel_.load_state_dict(kernel_state)
+            self.likelihood_.load_state_dict(likelihood_state)
+            self.kernel_.eval()
+            self.likelihood_.eval()
+        else:
+            self.kernel_ = None
+            self.likelihood_ = None
+
+        self.optim_ = None
+        self.mll_ = None

@@ -37,19 +37,22 @@ class ScaledTarget:
         self.model.fit(X, y_scaled, **kwargs)
         return self
 
-    def predict(self, X, y, **kwargs):
-        preds_scaled = self.model.predict(
-            X=X, y=y, **kwargs
-        )  # or however your predict returns
+    def predict(self, X, y, return_original_scale=False, **kwargs):
+        y_scaled = (y - self.y_mean_) / self.y_std_
+        preds_scaled = self.model.predict(X=X, y=y_scaled, **kwargs)
 
-        unscaled_preds = self.y_mean_ + self.y_std_ * preds_scaled.sel(
-            value=["mean", "lower", "upper"]
-        )
-        unscaled_sd = self.y_std_ * preds_scaled.sel(value="std")
+        # by default, return the scaled predictions, but if requested, return the original scale
+        if not return_original_scale:
+            return preds_scaled
+        else:
+            unscaled_preds = self.y_mean_ + self.y_std_ * preds_scaled.sel(
+                value=["mean", "lower", "upper"]
+            )
+            unscaled_sd = self.y_std_ * preds_scaled.sel(value="std")
 
-        return xr.concat([unscaled_preds, unscaled_sd], dim="value").transpose(
-            "Date", "lake", "value"
-        )
+            return xr.concat([unscaled_preds, unscaled_sd], dim="value").transpose(
+                "Date", "lake", "value"
+            )
 
 
 class ModelBase(BaseEstimator, ABC):
@@ -89,15 +92,6 @@ class ModelBase(BaseEstimator, ABC):
         """
         pass
 
-    @abstractmethod
-    def save(self, path):
-        pass
-
-    @classmethod
-    @abstractmethod
-    def load(cls, path):
-        pass
-
 
 class NumpyroModel(ModelBase):
     def __init__(
@@ -135,13 +129,6 @@ class NumpyroModel(ModelBase):
     @property
     @abstractmethod
     def dims(self) -> dict[str, list[str]]:
-        pass
-
-    def save(self, path):
-        pass
-
-    @classmethod
-    def load(cls, path):
         pass
 
     def fit(self, X: xr.DataArray, y: xr.DataArray, rng_key=None, *args, **kwargs):

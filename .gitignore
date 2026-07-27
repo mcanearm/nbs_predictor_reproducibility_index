@@ -176,6 +176,7 @@ data/CFSR/
 data/CFS/
 # Large fitted model artifacts
 data/models/
+data/model_results/*.csv
 # data/lake_data.nc and data/covar_data.nc are intentionally tracked
 # Scratch / temp outputs
 .vscode
